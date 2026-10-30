@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>HDBN — Painel Web & Comunidade</title>
+  
+  <!-- Desativar Cache do Navegador para carregamento 100% fresco -->
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Expires" content="0">
+
+  <!-- Open Graph -->
+  <meta property="og:title" content="HDBN — Painel Web & Comunidade">
+  <meta property="og:description" content="Plataforma oficial de beatmaps, rankings e comunidade do HDBN Rhythm Game (Godot)">
+  <meta property="og:image" content="og-cover.jpg">
+
+  <!-- Google Fonts: Inter & Material Symbols Outlined -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" rel="stylesheet">
+
+  <!-- CSS -->
+  <link rel="stylesheet" href="styles/main.css?v=4.2.0">
+  <link rel="stylesheet" href="styles/components.css?v=4.2.0">
+  <link rel="stylesheet" href="styles/admin.css?v=4.2.0">
+
+  <!-- JSZip (Leitor oficial de pacotes .hbn / Godot) -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+
+  <!-- Supabase JS Library -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+</head>
+<body>
+
+  <!-- NAVBAR SUPERIOR (ESTILO PAINEL BETA V2) -->
+  <header class="navbar">
+    <div class="container navbar-container">
+      <div style="display: flex; align-items: center; gap: 0.75rem;">
+        <button class="mobile-menu-btn" id="btn-toggle-mobile-menu" aria-label="Abrir Menu" onclick="window.toggleMobileDrawer()">
+          <span class="material-symbols-outlined">menu</span>
+        </button>
+        <a href="#/" class="navbar-logo" onclick="window.navigateClean('#/'); return false;">
+          <span>Painel</span>
+          <span class="logo-beta-badge">BETA V2</span>
+        </a>
+      </div>
+
+      <!-- Menu Principal Central -->
+      <ul class="navbar-links">
+        <li><a href="#/" onclick="window.navigateClean('#/'); return false;" class="nav-link" id="nav-item-home">Início</a></li>
+        <li><a href="#/maps" onclick="window.navigateClean('#/maps'); return false;" class="nav-link" id="nav-item-maps">Maps</a></li>
+        <li><a href="#/rank" onclick="window.navigateClean('#/rank'); return false;" class="nav-link" id="nav-item-rank">Rank</a></li>
+        <li><a href="#/comunidade" onclick="window.navigateClean('#/comunidade'); return false;" class="nav-link" id="nav-item-comunidade">Comunidade</a></li>
+        <li>
+          <a href="#/publicar" onclick="window.handlePublishClick(event); return false;" class="nav-link nav-link-publish" id="nav-item-publicar">
+            <span class="material-symbols-outlined" style="font-size:1.05rem;">folder</span> Publicar
+          </a>
+        </li>
+        <li><a href="#/ajuda" onclick="window.navigateClean('#/ajuda'); return false;" class="nav-link" id="nav-item-ajuda">ajuda</a></li>
+      </ul>
+
+      <!-- Ações à Direita: Botão de Pesquisa, Botão Itch.io & Perfil / Ghost Icon -->
+      <div class="navbar-actions">
+        <a href="#/busca" onclick="window.navigateClean('#/busca'); return false;" class="navbar-search-btn" id="btn-navbar-search" title="Pesquisar Mapas e Usuários" aria-label="Pesquisar">
+          <span class="material-symbols-outlined">search</span>
+        </a>
+
+        <a href="https://rikafurud.itch.io/hdbn" target="_blank" class="btn-itch">
+          <span class="material-symbols-outlined" style="font-size:1rem;">download</span> Baixar no Itch
+        </a>
+
+        <!-- Ghost / Profile Dropdown -->
+        <div class="user-ghost-menu-wrap" id="user-ghost-menu-wrap">
+          <button class="user-ghost-btn" id="btn-ghost-menu" onclick="window.toggleUserMenu(event)" aria-label="Menu de Usuário">
+            <img src="https://api.dicebear.com/7.x/bottts/svg?seed=hdbn_default" id="ghost-avatar-img" class="ghost-avatar" alt="Avatar">
+          </button>
+          
+          <div class="user-floating-menu" id="user-floating-menu">
+            <!-- Conteúdo dinâmico preenchido pelo updateAuthUI() -->
+          </div>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <!-- DRAWER MOBILE ACCORDION (<1250px) -->
+  <nav class="mobile-nav-drawer" id="mobile-nav-drawer">
+    <div class="mobile-accordion-group active">
+      <button class="mobile-accordion-header" onclick="this.parentElement.classList.toggle('active')">
+        <span style="display:flex; align-items:center; gap:0.5rem;">
+          <span class="material-symbols-outlined" style="color:var(--accent-purple-light);">navigation</span>
+          <span>Navegação Principal</span>
+        </span>
+        <span class="material-symbols-outlined">expand_more</span>
+      </button>
+      <div class="mobile-accordion-content">
+        <a href="#/" class="mobile-accordion-link" onclick="window.navigateClean('#/'); window.closeMobileDrawer(); return false;"><span class="material-symbols-outlined">home</span>Início</a>
+        <a href="#/busca" class="mobile-accordion-link" onclick="window.navigateClean('#/busca'); window.closeMobileDrawer(); return false;"><span class="material-symbols-outlined">search</span>Pesquisar</a>
+        <a href="#/maps" class="mobile-accordion-link" onclick="window.navigateClean('#/maps'); window.closeMobileDrawer(); return false;"><span class="material-symbols-outlined">library_music</span>Maps</a>
+        <a href="#/rank" class="mobile-accordion-link" onclick="window.navigateClean('#/rank'); window.closeMobileDrawer(); return false;"><span class="material-symbols-outlined">leaderboard</span>Rank</a>
+        <a href="#/comunidade" class="mobile-accordion-link" onclick="window.navigateClean('#/comunidade'); window.closeMobileDrawer(); return false;"><span class="material-symbols-outlined">groups</span>Comunidade</a>
+        <a href="#/publicar" class="mobile-accordion-link" onclick="window.handlePublishClick(event); window.closeMobileDrawer(); return false;"><span class="material-symbols-outlined">folder</span>Publicar Mapa</a>
+        <a href="#/ajuda" class="mobile-accordion-link" onclick="window.navigateClean('#/ajuda'); window.closeMobileDrawer(); return false;"><span class="material-symbols-outlined">help</span>Ajuda / FAQ</a>
+      </div>
+    </div>
+
+    <div class="mobile-accordion-group">
+      <button class="mobile-accordion-header" onclick="this.parentElement.classList.toggle('active')">
+        <span style="display:flex; align-items:center; gap:0.5rem;">
+          <span class="material-symbols-outlined" style="color:var(--accent-cyan);">open_in_new</span>
+          <span>Links Externos</span>
+        </span>
+        <span class="material-symbols-outlined">expand_more</span>
+      </button>
+      <div class="mobile-accordion-content">
+        <a href="https://rikafurud.itch.io/hdbn" target="_blank" class="mobile-accordion-link"><span class="material-symbols-outlined">download</span>Baixar no Itch.io</a>
+        <a href="https://cafedobom123.blogspot.com" target="_blank" class="mobile-accordion-link"><span class="material-symbols-outlined">rss_feed</span>Blogspot Oficial</a>
+      </div>
+    </div>
+  </nav>
+
+  <!-- CONTAINER DE VISUALIZAÇÃO PRINCIPAL -->
+  <main class="main-content" id="main-view">
+    <div class="container" style="padding: 3rem 0; text-align:center; color:var(--text-muted);">
+      <span class="material-symbols-outlined" style="font-size:2.5rem; animation:spin 1s linear infinite;">sync</span>
+      <p style="margin-top:0.5rem;">Carregando HDBN Rhythm Game...</p>
+    </div>
+  </main>
+
+  <!-- FOOTER -->
+  <footer class="footer">
+    <div class="container">
+      <div class="footer-grid">
+        <div class="footer-brand">
+          <div style="font-size:1.4rem; font-weight:900; color:#fff;">HDBN <span class="logo-beta-badge">BETA V2</span></div>
+          <p class="footer-desc">Plataforma oficial de beatmaps, leaderboards e comunidade para o jogo de ritmo HDBN (Godot Engine).</p>
+        </div>
+        <div>
+          <h4 class="footer-heading">Navegação</h4>
+          <ul class="footer-links-list">
+            <li><a href="#/" onclick="window.navigateClean('#/'); return false;" class="footer-link">Início</a></li>
+            <li><a href="#/maps" onclick="window.navigateClean('#/maps'); return false;" class="footer-link">Maps</a></li>
+            <li><a href="#/rank" onclick="window.navigateClean('#/rank'); return false;" class="footer-link">Rank</a></li>
+            <li><a href="#/comunidade" onclick="window.navigateClean('#/comunidade'); return false;" class="footer-link">Comunidade</a></li>
+          </ul>
+        </div>
+        <div>
+          <h4 class="footer-heading">Comunidade & Ajuda</h4>
+          <ul class="footer-links-list">
+            <li><a href="#/ajuda" onclick="window.navigateClean('#/ajuda'); return false;" class="footer-link">Ajuda & FAQ</a></li>
+            <li><a href="#/publicar" onclick="window.handlePublishClick(event); return false;" class="footer-link">Publicar Mapa</a></li>
+            <li><a href="https://cafedobom123.blogspot.com" target="_blank" class="footer-link">Blogspot Oficial</a></li>
+          </ul>
+        </div>
+        <div>
+          <h4 class="footer-heading">Download</h4>
+          <ul class="footer-links-list">
+            <li><a href="https://rikafurud.itch.io/hdbn" target="_blank" class="footer-link" style="color:var(--accent-purple-light); font-weight:700;">Baixar no Itch.io</a></li>
+          </ul>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <div>&copy; 2026 HDBN Rhythm Game. Desenvolvido para a comunidade.</div>
+      </div>
+    </div>
+  </footer>
+
+  <!-- MODAL DE EDIÇÃO DE PERFIL -->
+  <div class="modal-overlay" id="profile-edit-modal-overlay" onclick="if(event.target === this) this.classList.remove('active')">
+    <div class="modal-container">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1.25rem;">
+        <h2 style="font-size:1.3rem; font-weight:900; color:white;">Editar Meu Perfil</h2>
+        <button class="btn-close-modal" onclick="document.getElementById('profile-edit-modal-overlay').classList.remove('active')">
+          <span class="material-symbols-outlined">close</span>
+        </button>
+      </div>
+      <form onsubmit="window.app.saveProfileEdits(event)" style="display:flex; flex-direction:column; gap:0.9rem;">
+        <div>
+          <label style="font-size:0.8rem; font-weight:700; color:var(--text-secondary);">Nome de Usuário</label>
+          <input type="text" id="edit-username" required class="search-input-field" style="width:100%; margin-top:0.25rem;">
+        </div>
+        <div>
+          <label style="font-size:0.8rem; font-weight:700; color:var(--accent-cyan);">@ do Discord</label>
+          <input type="text" id="edit-discord" class="search-input-field" placeholder="ex: usuario#0000 ou @usuario" style="width:100%; margin-top:0.25rem;">
+        </div>
+        <div>
+          <label style="font-size:0.8rem; font-weight:700; color:var(--text-secondary);">URL da Foto de Perfil (Imagem)</label>
+          <input type="url" id="edit-avatar" class="search-input-field" placeholder="https://exemplo.com/sua-imagem.png" style="width:100%; margin-top:0.25rem;">
+          <small style="font-size:0.75rem; color:var(--text-muted); display:block; margin-top:0.2rem;">Cole um link direto de imagem (PNG, JPG, WebP ou GIF)</small>
+        </div>
+        <div>
+          <label style="font-size:0.8rem; font-weight:700; color:var(--text-secondary);">Fale sobre você (Bio)</label>
+          <textarea id="edit-bio" class="search-input-field" rows="3" placeholder="Fale um pouco sobre você..." style="width:100%; margin-top:0.25rem; font-family:inherit; resize:vertical;"></textarea>
+        </div>
+        <div style="border-top:1px solid var(--border-subtle); padding-top:0.75rem;">
+          <label style="font-size:0.8rem; font-weight:700; color:var(--text-secondary);">Nova Senha (deixe vazio se não quiser alterar)</label>
+          <input type="password" id="edit-password" class="search-input-field" placeholder="Nova senha" style="width:100%; margin-top:0.25rem;">
+        </div>
+        <div>
+          <label style="font-size:0.8rem; font-weight:700; color:var(--text-secondary);">Confirmar Nova Senha</label>
+          <input type="password" id="edit-password-confirm" class="search-input-field" placeholder="Confirme a nova senha" style="width:100%; margin-top:0.25rem;">
+        </div>
+        <button type="submit" class="btn btn-primary" style="width:100%; margin-top:0.5rem;">Salvar Alterações</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- MODAL DE AUTENTICAÇÃO (LOGIN / CADASTRO COM DISCORD) -->
+  <div class="modal-overlay" id="auth-modal-overlay" onclick="if(event.target === this) this.classList.remove('active')">
+    <div class="modal-container">
+      <div class="modal-tabs">
+        <button class="modal-tab-btn active" id="tab-btn-login" onclick="window.switchAuthTab('login')">Logar</button>
+        <button class="modal-tab-btn" id="tab-btn-register" onclick="window.switchAuthTab('register')">Inscrever-se</button>
+      </div>
+      <div id="auth-tab-content">
+        <!-- Renderizado dinamicamente -->
+      </div>
+      <button onclick="document.getElementById('auth-modal-overlay').classList.remove('active')" class="btn btn-secondary" style="width:100%; margin-top:1rem;">Fechar</button>
+    </div>
+  </div>
+
+  <!-- CONTAINER DE TOASTS -->
+  <div class="toast-container" id="toast-container"></div>
+
+  <!-- HDBN CONFIGURAÇÕES OFICIAIS (Supabase & Cloudinary) -->
+  <script src="js/config.js?v=4.3.0"></script>
+
+  <!-- MASTER UNIFIED SPA CONTROLLER -->
+  <script src="js/app.js?v=4.3.0"></script>
+
+</body>
+</html>

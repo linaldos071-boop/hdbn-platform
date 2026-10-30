@@ -8,10 +8,10 @@ O **HDBN** é a plataforma web comunitária e ecossistema integrado para um jogo
 
 O projeto foi planejado para ser leve, otimizado e seguro, separando o processamento pesado de mídia e a segurança dos dados:
 * **Frontend:** Interface web responsiva desenvolvida em **HTML, CSS e JavaScript**.
-* **Banco de Dados & Autenticação:** **Supabase**, utilizando gerenciamento seguro de sessões e criptografia de senhas por *Hash Auth* (garantindo que senhas nunca fiquem expostas em texto plano nas tabelas).
-* **Armazenamento de Mídia:** **Cloudinary**, responsável por hospedar capas (`art`), áudios otimizados e trechos de preview dos mapas.
+* **Banco de Dados & Autenticação (Supabase Duplo / Split Load Balancing):** Utiliza dois projetos independentes no Supabase para balancear a carga e otimizar recursos (dividindo consultas de dados da comunidade, perfis e tabelas de mapas). Conta com gerenciamento seguro de sessões e criptografia de senhas por *Hash Auth* (garantindo que senhas nunca fiquem expostas em texto plano nas tabelas).
+* **Armazenamento de Mídia (Cloudinary):** Responsável por hospedar de forma centralizada e otimizada os arquivos `.hbn`, capas (`art`), áudios e trechos de preview dos mapas.
 * **Integração de Conteúdo:** Feed dinâmico integrado diretamente ao Blogspot (`cafedobom123.blogspot.com`) para notas de atualização e posts da beta.
-* **Motor do Jogo:** Desenvolvido em **Godot Engine** (`GDScript`), utilizando criptografia estrita baseada na chave interna do projeto (`ENCRYPTION_KEY`) para empacotar e desempacotar mapas de forma segura.
+* **Motor do Jogo:** Desenvolvido em **Godot Engine** (`GDScript`), utilizando criptografia estrita baseada na chave interna do projeto (`ENCRYPTION_KEY: String = "HigurashiKai!Kamisama_no_Syndrome#Hinamizawa_07$WhenTheyCry"`) para empacotar e desempacotar mapas de forma segura.
 
 ---
 
@@ -20,7 +20,7 @@ O projeto foi planejado para ser leve, otimizado e seguro, separando o processam
 ### 1. Navegação & Layout Principal
 * **Header Dinâmico:** Links rápidos para *Início, Maps, Rank, Comunidade* e botão de atalho para a página externa do projeto no itch.io[cite: 1].
 * **Menu de Perfil (Ghost Menu):** Área no canto superior direito para acesso rápido às telas de **Inscrever-se** e **Logar**.
-* **Responsividade Inteligente:** Adaptação de menus laterais (estilo painel de ferramentas) para dispositivos móveis e layouts de grade otimizados para desktop.
+* **Responsividade Inteligente:** Adaptação de menus laterais (estilo painel de ferramentas) para dispositivos móveis e layouts de grade otimizados para desktop (exibindo grades limitadas de 12 a 14 itens por vez para evitar poluição visual).
 
 ### 2. Sistema de Mapas & Publicação
 * **Envio Protegido:** Os usuários podem arrastar e soltar arquivos compactados `.hbn`. O pacote e o JSON interno (contendo notas, posições e dados de contagem) trafegam criptografados.
@@ -29,8 +29,8 @@ O projeto foi planejado para ser leve, otimizado e seguro, separando o processam
 * **Fila de Moderação:** Todo mapa recém-publicado passa obrigatoriamente por uma etapa de triagem onde os administradores decidem se ele será aprovado, integrado ao modo ranqueado ou descartado.
 
 ### 3. Sistema de Ranking (Normal vs. Pro)
-* **Rank Normal:** Soma o desempenho e a pontuação acumulada de **todos** os mapas jogados e concluídos (incluindo notas mais baixas).
-* **Rank Pro:** Inspirado no sistema de performance competitivo, filtra e contabiliza **apenas** pontuações de mapas com notas de alto desempenho (**A, S, S+, SS e SS+**), ignorando notas inferiores (como B ou C).
+* **Rank Normal:** Soma o desempenho e a pontuação acumulada de **todos** os mapas jogados e concluídos (incluindo notas mais baixas, como B ou C).
+* **Rank Pro:** Inspirado no sistema de performance competitivo (*osu!*), filtra e contabiliza **apenas** pontuações de mapas com notas de alto desempenho (**A, S, S+, SS e SS+**), ignorando notas inferiores.
 * **Filtros Temporais:** Listagem segmentada por **Ano**, **Mês** e **Semana**.
 
 ### 4. Comunidade & Perfis

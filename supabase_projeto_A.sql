@@ -60,6 +60,19 @@ ALTER TABLE public.users ADD COLUMN IF NOT EXISTS infraction_count INT  DEFAULT 
 ALTER TABLE public.users ADD COLUMN IF NOT EXISTS last_login    TIMESTAMPTZ DEFAULT NOW();
 ALTER TABLE public.users ADD COLUMN IF NOT EXISTS avatar_url    TEXT    DEFAULT '';
 
+-- Anti-Spam e Limites de Publicação
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS uploads_today_count       INT         DEFAULT 0;
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS last_upload_date          DATE        DEFAULT CURRENT_DATE;
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS custom_upload_limit       INT         DEFAULT NULL;
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS is_trusted_creator        BOOLEAN     DEFAULT FALSE;
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS duplicate_attempts_count  INT         DEFAULT 0;
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS ban_expires_at            TIMESTAMPTZ DEFAULT NULL;
+
+-- Sincronização e correção de avatares com a API NekosAPI CDN
+UPDATE public.users 
+SET avatar_url = 'https://cdn.nekosapi.com/nekos-api/images/original/86faa896-b305-411b-917e-37fe3989d04a.webp' 
+WHERE avatar_url IS NULL OR avatar_url = '' OR avatar_url LIKE '%v3/images/random%';
+
 
 -- ============================================================
 -- PASSO 3: TABELA beatmaps (mapas .hbn publicados)
@@ -110,6 +123,11 @@ ALTER TABLE public.beatmaps ADD COLUMN IF NOT EXISTS observation        TEXT    
 ALTER TABLE public.beatmaps ADD COLUMN IF NOT EXISTS downloads_count    INT     DEFAULT 0;
 ALTER TABLE public.beatmaps ADD COLUMN IF NOT EXISTS favorites_count    INT     DEFAULT 0;
 ALTER TABLE public.beatmaps ADD COLUMN IF NOT EXISTS reports_count      INT     DEFAULT 0;
+ALTER TABLE public.beatmaps ADD COLUMN IF NOT EXISTS language           VARCHAR(50) DEFAULT 'português';
+
+-- Detecção de Mapas Duplicados via Hash Criptográfico (SHA-256)
+ALTER TABLE public.beatmaps ADD COLUMN IF NOT EXISTS map_hash           VARCHAR(64);
+CREATE UNIQUE INDEX IF NOT EXISTS beatmaps_map_hash_idx ON public.beatmaps (map_hash) WHERE map_hash IS NOT NULL AND map_hash <> '';
 
 
 -- ============================================================

@@ -63,6 +63,19 @@
 
       <!-- Ações à Direita: Botão de Pesquisa, Botão Itch.io & Perfil / Ghost Icon -->
       <div class="navbar-actions">
+        <!-- Seletor de Idioma no Topo (Substitui o botão DEV) -->
+        <div class="lang-dropdown-wrap" style="position:relative; display:inline-block;">
+          <button class="dev-mode-pill lang-btn-top" onclick="const m=document.getElementById('lang-top-menu'); m.style.display = m.style.display==='block'?'none':'block'; event.stopPropagation();" style="display:flex; align-items:center; gap:0.35rem; cursor:pointer; background:rgba(255,255,255,0.06); border:1px solid var(--border-subtle); color:white; padding:0.35rem 0.65rem; border-radius:var(--radius-sm);" title="Selecionar Idioma do Site">
+            <span id="current-lang-flag">🌐</span> <span id="current-lang-label" style="font-size:0.75rem; font-weight:700;">PT</span> <span class="material-symbols-outlined" style="font-size:0.8rem;">expand_more</span>
+          </button>
+          <div id="lang-top-menu" class="user-floating-menu" style="right:0; min-width:140px; display:none; position:absolute; top:calc(100% + 6px); z-index:1000;" onclick="event.stopPropagation();">
+            <div class="user-floating-item" onclick="window.app.setLang('pt'); document.getElementById('lang-top-menu').style.display='none';" style="cursor:pointer; display:flex; align-items:center; gap:0.5rem; padding:0.5rem 0.75rem;">🇧🇷 Português</div>
+            <div class="user-floating-item" onclick="window.app.setLang('en'); document.getElementById('lang-top-menu').style.display='none';" style="cursor:pointer; display:flex; align-items:center; gap:0.5rem; padding:0.5rem 0.75rem;">🇺🇸 English</div>
+            <div class="user-floating-item" onclick="window.app.setLang('es'); document.getElementById('lang-top-menu').style.display='none';" style="cursor:pointer; display:flex; align-items:center; gap:0.5rem; padding:0.5rem 0.75rem;">🇪🇸 Español</div>
+            <div class="user-floating-item" onclick="window.app.setLang('ja'); document.getElementById('lang-top-menu').style.display='none';" style="cursor:pointer; display:flex; align-items:center; gap:0.5rem; padding:0.5rem 0.75rem;">🇯🇵 日本語</div>
+          </div>
+        </div>
+
         <a href="#/busca" onclick="window.navigateClean('#/busca'); return false;" class="navbar-search-btn" id="btn-navbar-search" title="Pesquisar Mapas e Usuários" aria-label="Pesquisar">
           <span class="material-symbols-outlined">search</span>
         </a>
@@ -74,7 +87,7 @@
         <!-- Ghost / Profile Dropdown -->
         <div class="user-ghost-menu-wrap" id="user-ghost-menu-wrap">
           <button class="user-ghost-btn" id="btn-ghost-menu" onclick="window.toggleUserMenu(event)" aria-label="Menu de Usuário">
-            <img src="https://api.dicebear.com/7.x/bottts/svg?seed=hdbn_default" id="ghost-avatar-img" class="ghost-avatar" alt="Avatar">
+            <img src="https://cdn.nekosapi.com/nekos-api/images/original/86faa896-b305-411b-917e-37fe3989d04a.webp" id="ghost-avatar-img" class="ghost-avatar" alt="Avatar">
           </button>
           
           <div class="user-floating-menu" id="user-floating-menu">
@@ -185,10 +198,42 @@
           <label style="font-size:0.8rem; font-weight:700; color:var(--accent-cyan);">@ do Discord</label>
           <input type="text" id="edit-discord" class="search-input-field" placeholder="ex: usuario#0000 ou @usuario" style="width:100%; margin-top:0.25rem;">
         </div>
+        <!-- STREAMING LINKS (Apenas Kick, Twitch ou YouTube permitidos) -->
+        <div style="background:rgba(255,255,255,0.03); border:1px solid var(--border-subtle); border-radius:var(--radius-sm); padding:0.75rem;">
+          <div style="font-size:0.8rem; font-weight:800; color:#fff; margin-bottom:0.4rem; display:flex; align-items:center; gap:0.4rem;">
+            <span class="material-symbols-outlined" style="font-size:1.1rem; color:#10b981;">sensors</span> Canais de Live & Streaming
+          </div>
+          <p style="font-size:0.72rem; color:var(--text-muted); margin:0 0 0.6rem 0;">Apenas links oficiais da Kick, Twitch ou YouTube são permitidos.</p>
+          <div style="display:flex; flex-direction:column; gap:0.5rem;">
+            <div>
+              <label style="font-size:0.75rem; font-weight:700; color:#10b981; display:flex; align-items:center; gap:0.25rem;">
+                <span>🟢 Kick</span>
+              </label>
+              <input type="url" id="edit-stream-kick" class="search-input-field" placeholder="https://kick.com/seucanal" style="width:100%; margin-top:0.2rem; font-size:0.8rem;">
+            </div>
+            <div>
+              <label style="font-size:0.75rem; font-weight:700; color:#a855f7; display:flex; align-items:center; gap:0.25rem;">
+                <span>🟣 Twitch</span>
+              </label>
+              <input type="url" id="edit-stream-twitch" class="search-input-field" placeholder="https://twitch.tv/seucanal" style="width:100%; margin-top:0.2rem; font-size:0.8rem;">
+            </div>
+            <div>
+              <label style="font-size:0.75rem; font-weight:700; color:#ef4444; display:flex; align-items:center; gap:0.25rem;">
+                <span>🔴 YouTube</span>
+              </label>
+              <input type="url" id="edit-stream-youtube" class="search-input-field" placeholder="https://youtube.com/@seucanal" style="width:100%; margin-top:0.2rem; font-size:0.8rem;">
+            </div>
+          </div>
+        </div>
         <div>
-          <label style="font-size:0.8rem; font-weight:700; color:var(--text-secondary);">URL da Foto de Perfil (Imagem)</label>
-          <input type="url" id="edit-avatar" class="search-input-field" placeholder="https://exemplo.com/sua-imagem.png" style="width:100%; margin-top:0.25rem;">
-          <small style="font-size:0.75rem; color:var(--text-muted); display:block; margin-top:0.2rem;">Cole um link direto de imagem (PNG, JPG, WebP ou GIF)</small>
+          <div style="display:flex; justify-content:space-between; align-items:center;">
+            <label style="font-size:0.8rem; font-weight:700; color:var(--text-secondary);">URL da Foto de Perfil (Imagem)</label>
+            <button type="button" class="btn btn-secondary btn-sm" onclick="window.app.generateNekosAvatar()" style="font-size:0.75rem; padding:0.2rem 0.5rem; display:inline-flex; align-items:center; gap:0.25rem;">
+              <span class="material-symbols-outlined" style="font-size:0.85rem;">casino</span> Gerar com NekosAPI
+            </button>
+          </div>
+          <input type="url" id="edit-avatar" class="search-input-field" placeholder="https://api.nekosapi.com/... ou sua imagem" style="width:100%; margin-top:0.25rem;">
+          <small style="font-size:0.75rem; color:var(--text-muted); display:block; margin-top:0.2rem;">Cole um link direto ou gere uma foto de anime automática via NekosAPI.com</small>
         </div>
         <div>
           <label style="font-size:0.8rem; font-weight:700; color:var(--text-secondary);">Fale sobre você (Bio)</label>

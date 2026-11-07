@@ -1,0 +1,17 @@
+# ============================================================
+# HDBN Rhythm Game — Configuração de Servidor Apache (InfinityFree)
+# ============================================================
+
+# Página de Erro 404 personalizada
+ErrorDocument 404 /404.html
+ErrorDocument 500 /index.html#/500
+
+# Habilitar MIME types para áudio e pacotes .hbn
+AddType audio/mpeg .mp3
+AddType application/json .json
+AddType application/octet-stream .hbn
+
+# Proteção e CORS para recursos
+<IfModule mod_headers.c>
+    Header set Access-Control-Allow-Origin "*"
+</IfModule>

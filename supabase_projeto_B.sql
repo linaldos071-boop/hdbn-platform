@@ -94,6 +94,10 @@ ALTER TABLE public.beatmaps ADD COLUMN IF NOT EXISTS downloads_count    INT     
 ALTER TABLE public.beatmaps ADD COLUMN IF NOT EXISTS favorites_count    INT     DEFAULT 0;
 ALTER TABLE public.beatmaps ADD COLUMN IF NOT EXISTS reports_count      INT     DEFAULT 0;
 
+-- Detecção de Mapas Duplicados via Hash Criptográfico (SHA-256)
+ALTER TABLE public.beatmaps ADD COLUMN IF NOT EXISTS map_hash           VARCHAR(64);
+CREATE UNIQUE INDEX IF NOT EXISTS beatmaps_map_hash_idx_b ON public.beatmaps (map_hash) WHERE map_hash IS NOT NULL AND map_hash <> '';
+
 
 -- ============================================================
 -- PASSO 4: TABELA maps (nome legado usado em partes do código)
@@ -158,6 +162,14 @@ CREATE TABLE IF NOT EXISTS public.users (
 
 ALTER TABLE public.users DROP COLUMN IF EXISTS password;
 ALTER TABLE public.users DROP CONSTRAINT IF EXISTS users_id_fkey;
+
+-- Anti-Spam e Limites de Publicação
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS uploads_today_count       INT         DEFAULT 0;
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS last_upload_date          DATE        DEFAULT CURRENT_DATE;
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS custom_upload_limit       INT         DEFAULT NULL;
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS is_trusted_creator        BOOLEAN     DEFAULT FALSE;
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS duplicate_attempts_count  INT         DEFAULT 0;
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS ban_expires_at            TIMESTAMPTZ DEFAULT NULL;
 
 
 -- ============================================================

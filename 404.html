@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>404 — Página Não Encontrada | HDBN</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800;900&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" rel="stylesheet">
+  <link rel="stylesheet" href="styles/main.css?v=4.3.0">
+  <link rel="stylesheet" href="styles/components.css?v=4.3.0">
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="js/config.js?v=4.3.0"></script>
+</head>
+<body style="min-height: 100vh; display: flex; flex-direction: column; background: #0c0d14; color: #fff;">
+
+  <!-- CABEÇALHO NORMAL -->
+  <header class="navbar">
+    <div class="container navbar-container" style="display:flex; justify-content:space-between; align-items:center;">
+      <a href="index.html#/" class="navbar-logo" style="text-decoration:none;">
+        <span>HDBN</span>
+        <span class="logo-beta-badge">BETA V2</span>
+      </a>
+      <div style="display:flex; gap:0.75rem; align-items:center;">
+        <a href="index.html#/" class="btn btn-secondary btn-sm" style="display:inline-flex; align-items:center; gap:0.35rem; font-size:0.85rem;">
+          <span class="material-symbols-outlined" style="font-size:1.1rem;">home</span> Início
+        </a>
+        <a href="index.html#/maps" class="btn btn-primary btn-sm" style="display:inline-flex; align-items:center; gap:0.35rem; font-size:0.85rem;">
+          <span class="material-symbols-outlined" style="font-size:1.1rem;">library_music</span> Ver Mapas
+        </a>
+      </div>
+    </div>
+  </header>
+
+  <!-- CONTEÚDO PRINCIPAL 404 -->
+  <main style="flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; padding:3rem 1.5rem;">
+    <div style="width:100%; max-width:800px; text-align:center;">
+
+      <!-- 404 GIGANTE NO CENTRO -->
+      <div style="line-height:1; margin-bottom:1.25rem; user-select:none;">
+        <span style="
+          font-size: clamp(6.5rem, 22vw, 12rem);
+          font-weight: 900;
+          letter-spacing: -0.04em;
+          background: linear-gradient(135deg, #8b5cf6 0%, #38bdf8 100%);
+          -webkit-background-clip: text;
+          -webkit-text-fill-color: transparent;
+          background-clip: text;
+          display: inline-block;
+          filter: drop-shadow(0 0 45px rgba(139,92,246,0.4));
+        ">404</span>
+      </div>
+
+      <!-- MENSAGEM DO ERRO -->
+      <div style="display:inline-flex; align-items:center; gap:0.5rem; background:rgba(139,92,246,.12); border:1px solid rgba(139,92,246,.35); border-radius:999px; padding:0.45rem 1.25rem; margin-bottom:1rem;">
+        <span class="material-symbols-outlined" style="font-size:1.2rem; color:#a78bfa;">explore_off</span>
+        <span style="font-size:0.9rem; font-weight:800; color:#c4b5fd;">Página, Perfil ou Mapa Não Encontrado</span>
+      </div>
+      <p style="color:var(--text-secondary); font-size:1rem; line-height:1.6; max-width:520px; margin:0 auto 2rem auto;">
+        O link que você tentou acessar não existe, foi movido ou o item foi despublicado da plataforma.
+      </p>
+
+      <!-- BOTÕES DE AÇÃO -->
+      <div style="display:flex; justify-content:center; gap:0.75rem; flex-wrap:wrap; margin-bottom:2.5rem;">
+        <a href="index.html#/" class="btn btn-primary" style="display:inline-flex; align-items:center; gap:0.4rem; padding:0.65rem 1.35rem; font-weight:800;">
+          <span class="material-symbols-outlined">home</span> Voltar ao Início
+        </a>
+        <a href="index.html#/maps" class="btn btn-secondary" style="display:inline-flex; align-items:center; gap:0.4rem; padding:0.65rem 1.35rem; font-weight:800;">
+          <span class="material-symbols-outlined">library_music</span> Explorar Mapas
+        </a>
+      </div>
+
+      <!-- ERROS COMUNS DOS NAVEGADORES -->
+      <div style="background:var(--bg-card); border:1px solid var(--border-subtle); border-radius:var(--radius-sm); padding:1.25rem 1.5rem; text-align:left; margin-bottom:3rem;">
+        <div style="font-size:0.75rem; font-weight:800; color:var(--text-muted); text-transform:uppercase; letter-spacing:.08em; margin-bottom:0.75rem;">
+          Erros Comuns no Navegador / Iframe
+        </div>
+        <div style="display:flex; flex-direction:column; gap:0.6rem;">
+          <div style="display:flex; align-items:flex-start; gap:0.55rem; font-size:0.85rem; color:var(--text-secondary);">
+            <span class="material-symbols-outlined" style="font-size:1.1rem; color:#f59e0b; flex-shrink:0;">person_off</span>
+            <span><strong style="color:#fff;">Perfil Inexistente:</strong> O ID do usuário não foi encontrado ou foi excluído.</span>
+          </div>
+          <div style="display:flex; align-items:flex-start; gap:0.55rem; font-size:0.85rem; color:var(--text-secondary);">
+            <span class="material-symbols-outlined" style="font-size:1.1rem; color:#38bdf8; flex-shrink:0;">music_off</span>
+            <span><strong style="color:#fff;">Mapa Não Encontrado:</strong> O beatmap ainda está em análise ou foi suspenso pela moderação.</span>
+          </div>
+          <div style="display:flex; align-items:flex-start; gap:0.55rem; font-size:0.85rem; color:var(--text-secondary);">
+            <span class="material-symbols-outlined" style="font-size:1.1rem; color:#ec4899; flex-shrink:0;">lock</span>
+            <span><strong style="color:#fff;">Acesso Não Autorizado:</strong> É necessário estar logado na conta para baixar ou visualizar.</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- MAPAS MAIS BAIXADOS (DINÂMICOS VIA SUPABASE) -->
+      <div style="text-align:left; margin-bottom:2.5rem;">
+        <h2 style="font-size:1.15rem; font-weight:900; color:#fff; display:flex; align-items:center; gap:0.4rem; margin-bottom:1rem;">
+          <span class="material-symbols-outlined" style="color:var(--accent-cyan);">download</span> Mapas Mais Baixados
+        </h2>
+        <div id="grid-mais-baixados" style="display:grid; grid-template-columns:repeat(auto-fill, minmax(210px, 1fr)); gap:1rem;">
+          <div style="color:var(--text-muted); font-size:0.85rem;">Carregando mapas mais baixados...</div>
+        </div>
+      </div>
+
+      <!-- MAPAS MAIS CURTIDOS / FÃS (DINÂMICOS VIA SUPABASE) -->
+      <div style="text-align:left; margin-bottom:2.5rem;">
+        <h2 style="font-size:1.15rem; font-weight:900; color:#fff; display:flex; align-items:center; gap:0.4rem; margin-bottom:1rem;">
+          <span class="material-symbols-outlined" style="color:#ec4899;">bookmark</span> Mapas Mais Curtidos (Fãs)
+        </h2>
+        <div id="grid-mais-curtidos" style="display:grid; grid-template-columns:repeat(auto-fill, minmax(210px, 1fr)); gap:1rem;">
+          <div style="color:var(--text-muted); font-size:0.85rem;">Carregando mapas favoritos...</div>
+        </div>
+      </div>
+
+    </div>
+  </main>
+
+  <footer style="border-top:1px solid var(--border-subtle); padding:1.5rem 0; text-align:center; color:var(--text-muted); font-size:0.8rem;">
+    HDBN Rhythm Game — Plataforma Oficial
+  </footer>
+
+  <script>
+    (async function() {
+      const defaultDemoMaps = [
+        {
+          id: "demo-1",
+          title: "鳥の詩 (Tori no Uta)",
+          artist: "Lia",
+          cover_url: "https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=600",
+          downloads_count: 1420,
+          favorites_count: 312
+        },
+        {
+          id: "demo-2",
+          title: "Elif",
+          artist: "Cadu Rodrigues",
+          cover_url: "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=600",
+          downloads_count: 980,
+          favorites_count: 245
+        },
+        {
+          id: "demo-3",
+          title: "Cyber Rush 4K",
+          artist: "HDBN Original",
+          cover_url: "capa.jpg",
+          downloads_count: 850,
+          favorites_count: 190
+        },
+        {
+          id: "demo-4",
+          title: "Neon Echoes",
+          artist: "Rhythm Lab",
+          cover_url: "https://images.unsplash.com/photo-1508700115892-45ecd05ae2ad?w=600",
+          downloads_count: 730,
+          favorites_count: 160
+        }
+      ];
+
+      const renderCards = (list, isFav = false) => {
+        return list.map(m => `
+          <a href="index.html#/beatmap?id=${encodeURIComponent(m.id)}" style="text-decoration:none; color:inherit;">
+            <div style="background:var(--bg-card); border:1px solid var(--border-subtle); border-radius:var(--radius-sm); overflow:hidden; transition:transform 0.2s, border-color 0.2s;" onmouseenter="this.style.borderColor='var(--accent-purple)'; this.style.transform='translateY(-2px)'" onmouseleave="this.style.borderColor='var(--border-subtle)'; this.style.transform=''">
+              <div style="width:100%; height:110px; background:#15161f; overflow:hidden;">
+                <img src="${m.cover_url || 'capa.jpg'}" onerror="this.onerror=null; this.src='capa.jpg'" alt="${m.title}" style="width:100%; height:100%; object-fit:cover;">
+              </div>
+              <div style="padding:0.75rem;">
+                <div style="font-weight:800; font-size:0.88rem; color:#fff; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${m.title}</div>
+                <div style="font-size:0.75rem; color:var(--text-secondary); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; margin:0.15rem 0 0.4rem 0;">${m.artist}</div>
+                <div style="font-size:0.72rem; color:${isFav ? '#ec4899' : 'var(--accent-cyan)'}; font-weight:700; display:flex; align-items:center; gap:0.25rem;">
+                  <span class="material-symbols-outlined" style="font-size:0.9rem;">${isFav ? 'bookmark' : 'download'}</span>
+                  ${isFav ? `${m.favorites_count || 0} fãs` : `${m.downloads_count || 0} downloads`}
+                </div>
+              </div>
+            </div>
+          </a>
+        `).join('');
+      };
+
+      const elB = document.getElementById("grid-mais-baixados");
+      const elC = document.getElementById("grid-mais-curtidos");
+
+      const updateGrids = (mapList) => {
+        const baixados = [...mapList].sort((a,b) => (b.downloads_count || 0) - (a.downloads_count || 0)).slice(0, 4);
+        const curtidos = [...mapList].sort((a,b) => (b.favorites_count || 0) - (a.favorites_count || 0)).slice(0, 4);
+        if (elB) elB.innerHTML = renderCards(baixados, false);
+        if (elC) elC.innerHTML = renderCards(curtidos, true);
+      };
+
+      // 1. Renderiza instantaneamente os mapas para nunca travar em carregamento
+      updateGrids(defaultDemoMaps);
+
+      // 2. Busca dados frescos do Supabase em background
+      try {
+        const cfg = (window.SUPABASE_CONFIG && window.SUPABASE_CONFIG.PROJECT_A) || {
+          url: "https://izltwpfhfsuigdteixpl.supabase.co",
+          key: "sb_publishable_Y4dAZ1l379h78_Lz_Ke3PA_4cbarrHn"
+        };
+        if (window.supabase && window.supabase.createClient && cfg && cfg.url && cfg.key) {
+          const client = window.supabase.createClient(cfg.url, cfg.key);
+          const fetchPromise = client.from("beatmaps").select("*").limit(50);
+          const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 4000));
+          const { data, error } = await Promise.race([fetchPromise, timeoutPromise]);
+          if (!error && Array.isArray(data) && data.length > 0) {
+            const valid = data.filter(m => m.status !== 'suspended' && m.status !== 'hidden');
+            if (valid.length > 0) {
+              updateGrids(valid);
+            }
+          }
+        }
+      } catch (e) {
+        console.warn("Aviso ao carregar mapas do Supabase no 404:", e);
+      }
+    })();
+  </script>
+</body>
+</html>

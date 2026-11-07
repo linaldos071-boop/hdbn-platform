@@ -44,6 +44,10 @@ class Router {
     this.routes[normalized] = handler;
   }
 
+  setNotFoundHandler(handler) {
+    this._notFoundHandler = handler;
+  }
+
   /**
    * Extrai de forma limpa e infalível a rota pura (ex: /download, /populares)
    * a partir de qualquer string de URL (/#/download, index.html#/downloads, etc.)
@@ -240,6 +244,8 @@ class Router {
         else if (normalizedPath === "/publicar" || normalizedPath === "/publish" || normalizedPath === "/upload") await window.app.renderPublishView();
         else if (normalizedPath === "/admin" || normalizedPath === "/dev") await window.app.renderAdminView();
         else if (normalizedPath === "/apoiar" || normalizedPath === "/support") await window.app.renderSupportView();
+        // Rota desconhecida → página 404 personalizada
+        else if (this._notFoundHandler) await this._notFoundHandler();
         else await window.app.renderHomeView();
       }
     }

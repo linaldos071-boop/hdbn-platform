@@ -294,6 +294,17 @@
   letter-spacing: 0.3px;
 }
 
+.pill-status-unranked {
+  background: #374151;
+  color: #d1d5db;
+  font-size: 0.65rem;
+  font-weight: 900;
+  padding: 0.15rem 0.55rem;
+  border-radius: 9999px;
+  text-transform: lowercase;
+  letter-spacing: 0.3px;
+}
+
 .shelf-diff-caption {
   font-size: 0.65rem;
   color: var(--text-muted);
@@ -1364,4 +1375,290 @@
     grid-template-columns: 1fr;
   }
 }
+
+/* ==========================================================================
+   7. DRAG AND DROP ZONE (.hbn Upload Interativo)
+   ========================================================================== */
+.drag-drop-zone {
+  border: 2px dashed rgba(139, 92, 246, 0.45);
+  border-radius: var(--radius-sm);
+  padding: 2.25rem 1.5rem;
+  text-align: center;
+  cursor: pointer;
+  background: rgba(20, 21, 32, 0.6);
+  transition: all 0.22s ease-in-out;
+  position: relative;
+  overflow: hidden;
+}
+
+.drag-drop-zone:hover {
+  border-color: var(--accent-purple-light);
+  background: rgba(28, 29, 44, 0.8);
+  transform: translateY(-1px);
+}
+
+.drag-drop-zone.drag-active {
+  border-color: #a78bfa !important;
+  border-style: solid !important;
+  background: rgba(139, 92, 246, 0.16) !important;
+  box-shadow: 0 0 30px rgba(139, 92, 246, 0.35) inset, 0 0 20px rgba(139, 92, 246, 0.3);
+  transform: scale(1.015);
+}
+
+.drag-drop-zone.drag-error {
+  border-color: #ef4444 !important;
+  background: rgba(239, 68, 68, 0.12) !important;
+  animation: shakeError 0.35s ease;
+}
+
+@keyframes shakeError {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-6px); }
+  75% { transform: translateX(6px); }
+}
+
+/* ==========================================================================
+   8. MODAL DE PROGRESSO E ANTI-ABANDONO (CLOUDINARY -> SUPABASE)
+   ========================================================================== */
+.upload-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(7, 8, 12, 0.88);
+  backdrop-filter: blur(6px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10090;
+  animation: fadeIn 0.2s ease;
+  padding: 1rem;
+}
+
+.upload-modal-card {
+  background: #141520;
+  border: 1px solid rgba(139, 92, 246, 0.5);
+  border-radius: 12px;
+  padding: 2.25rem;
+  max-width: 500px;
+  width: 100%;
+  box-shadow: 0 25px 60px rgba(0, 0, 0, 0.85);
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+  animation: scaleIn 0.22s ease;
+}
+
+.upload-progress-track {
+  width: 100%;
+  height: 12px;
+  background: #090a10;
+  border-radius: 999px;
+  overflow: hidden;
+  border: 1px solid var(--border-subtle);
+  position: relative;
+}
+
+.upload-progress-fill {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, #7c3aed, #a78bfa, #38bdf8);
+  border-radius: 999px;
+  transition: width 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  box-shadow: 0 0 12px rgba(167, 139, 250, 0.6);
+}
+
+.upload-anti-abandon-alert {
+  background: rgba(245, 158, 11, 0.1);
+  border: 1px solid rgba(245, 158, 11, 0.45);
+  border-left: 4px solid #f59e0b;
+  border-radius: 6px;
+  padding: 0.85rem 1rem;
+  color: #fbbf24;
+  font-size: 0.85rem;
+  font-weight: 600;
+  line-height: 1.45;
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+}
+
+/* ==========================================================================
+   9. SKELETON SCREEN (CARREGAMENTO ESTILO YOUTUBE / SHIMMER EFFECT)
+   ========================================================================== */
+.skeleton-shimmer {
+  background: linear-gradient(90deg, #13141d 0%, #202230 50%, #13141d 100%);
+  background-size: 200% 100%;
+  animation: skeletonShimmer 1.5s infinite linear;
+  border-radius: var(--radius-sm);
+}
+
+@keyframes skeletonShimmer {
+  0%   { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+.skeleton-shelf-card {
+  background: #14151e;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  padding: 0.75rem 1rem;
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+  pointer-events: none;
+}
+
+.skeleton-thumb {
+  width: 64px;
+  height: 64px;
+  border-radius: var(--radius-sm);
+  flex-shrink: 0;
+}
+
+.skeleton-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.skeleton-line-title {
+  height: 14px;
+  width: 68%;
+}
+
+.skeleton-line-creator {
+  height: 10px;
+  width: 42%;
+}
+
+.skeleton-line-badge {
+  height: 12px;
+  width: 30%;
+}
+
+/* ==========================================================================
+   10. CARD COVER PLAY OVERLAY & EQUALIZER BARS (30s PREVIEW)
+   ========================================================================== */
+.shelf-card-thumb-wrap {
+  position: relative;
+  width: 64px;
+  height: 64px;
+  flex-shrink: 0;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.shelf-card-thumb-wrap .shelf-card-thumb {
+  width: 100%;
+  height: 100%;
+  display: block;
+  transition: transform 0.25s ease, filter 0.25s ease;
+}
+
+.shelf-card-thumb-wrap:hover .shelf-card-thumb {
+  transform: scale(1.06);
+  filter: brightness(0.7);
+}
+
+.shelf-card-play-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.45);
+  opacity: 0;
+  transition: opacity 0.2s ease;
+  cursor: pointer;
+}
+
+.shelf-card-thumb-wrap:hover .shelf-card-play-overlay,
+.shelf-card-play-overlay.playing {
+  opacity: 1;
+}
+
+.shelf-card-play-overlay .play-icon {
+  font-size: 28px;
+  color: #fff;
+  filter: drop-shadow(0 2px 6px rgba(0,0,0,0.8));
+  transition: transform 0.15s ease;
+}
+
+.shelf-card-play-overlay:hover .play-icon {
+  transform: scale(1.15);
+  color: var(--accent-cyan);
+}
+
+/* Equalizador animado nos cards enquanto toca */
+.card-equalizer-bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 18px;
+}
+
+.card-equalizer-bars span {
+  width: 3px;
+  background: var(--accent-cyan);
+  border-radius: 2px;
+  animation: soundBars 0.75s ease-in-out infinite alternate;
+}
+
+.card-equalizer-bars span:nth-child(1) { height: 40%; animation-delay: 0.1s; }
+.card-equalizer-bars span:nth-child(2) { height: 90%; animation-delay: 0.3s; }
+.card-equalizer-bars span:nth-child(3) { height: 60%; animation-delay: 0.2s; }
+
+@keyframes soundBars {
+  0%   { height: 25%; }
+  100% { height: 100%; }
+}
+
+/* ==========================================================================
+   11. ATALHO E PAINEL DO DESENVOLVEDOR (DEV MODE PORTAL)
+   ========================================================================== */
+.dev-mode-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.35rem 0.75rem;
+  background: rgba(245, 158, 11, 0.12);
+  border: 1px solid rgba(245, 158, 11, 0.4);
+  color: #f59e0b;
+  border-radius: var(--radius-sm);
+  font-size: 0.75rem;
+  font-weight: 800;
+  text-decoration: none;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.dev-mode-pill:hover {
+  background: rgba(245, 158, 11, 0.22);
+  border-color: #f59e0b;
+  color: #fbbf24;
+  transform: translateY(-1px);
+  box-shadow: 0 0 12px rgba(245, 158, 11, 0.25);
+}
+
+.dev-portal-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: 2.5rem;
+  max-width: 680px;
+  margin: 0 auto;
+}
+
+.dev-privilege-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  padding: 0.85rem 1rem;
+}
+
+
 

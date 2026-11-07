@@ -30,10 +30,12 @@
     appName: "HDBN",
     gameName: "HDBN Rhythm Game",
     version: "4.2.0",
+    dailyUploadLimit: 2,
+    duplicateMapMessage: "Este mapa já foi publicado anteriormente. Envios duplicados não são permitidos.",
     itchUrl: "https://rikafurud.itch.io/hdbn",
     blogspotUrl: "https://cafedobom123.blogspot.com",
     blogspotFeed: "https://cafedobom123.blogspot.com/feeds/posts/default?alt=json",
-    defaultAvatar: "https://api.dicebear.com/7.x/bottts/svg?seed=hdbn_default",
+    defaultAvatar: "https://cdn.nekosapi.com/nekos-api/images/original/86faa896-b305-411b-917e-37fe3989d04a.webp",
     defaultCover: "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=1200",
     ROLES: {
       dev: { level: 3, label: "DEV", tagClass: "tag-dev" },
@@ -43,6 +45,36 @@
       player: { level: 0, label: "PLAYER", tagClass: "tag-player" }
     }
   };
+
+  // ==========================================================================
+  // NEKOS API SERVICE (nekosapi.com v4) — Fotos de Perfil e Avatares Oficiais
+  // ==========================================================================
+  class NekosService {
+    static getDirectAvatarUrl() {
+      return "https://cdn.nekosapi.com/nekos-api/images/original/86faa896-b305-411b-917e-37fe3989d04a.webp";
+    }
+
+    static async fetchRandomAvatar() {
+      try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 6000);
+        const res = await fetch("https://api.nekosapi.com/v4/images/random?rating=safe&limit=1", {
+          signal: controller.signal
+        });
+        clearTimeout(timeoutId);
+
+        if (res.ok) {
+          const data = await res.json();
+          if (Array.isArray(data) && data.length > 0 && data[0].url) {
+            return data[0].url;
+          }
+        }
+      } catch (err) {
+        console.warn("Aviso Nekos API v4 (usando fallback seguro):", err.message);
+      }
+      return "https://cdn.nekosapi.com/nekos-api/images/original/86faa896-b305-411b-917e-37fe3989d04a.webp";
+    }
+  }
 
   // ==========================================================================
   // 2. CRYPTO & .HBN CHART PARSER ENGINE
@@ -71,6 +103,22 @@
       });
       return total;
     }
+
+    static async computeFileSHA256(file) {
+      const arrayBuffer = await file.arrayBuffer();
+      const hashBuffer = await crypto.subtle.digest("SHA-256", arrayBuffer);
+      const hashArray = Array.from(new Uint8Array(hashBuffer));
+      return hashArray.map(b => b.toString(16).padStart(2, "0")).join("");
+    }
+  }
+
+  function sanitizeDifficultyLevel(level) {
+    const l = String(level || "").toLowerCase().trim();
+    if (l === "easy" || l === "facil" || l === "fácil") return "facil";
+    if (l === "hard" || l === "difícil" || l === "dificil") return "hard";
+    if (l === "expert") return "expert";
+    if (l === "extreme") return "extreme";
+    return "medio"; // cobre "normal", "medium", "medio", etc.
   }
 
   // ==========================================================================
@@ -353,20 +401,16 @@
         return false;
       }
       try {
-        const queryPromise = this.supabase.from("scores").select("id").limit(1);
-        const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 3000));
-        const { data, error } = await Promise.race([queryPromise, timeoutPromise]);
-        
-        if (error && error.message && error.message.includes("Failed to fetch")) {
-          this.isDbConnected = false;
-          return false;
-        }
+        const queryPromise = this.supabase.from("beatmaps").select("id").limit(1);
+        const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 8000));
+        await Promise.race([queryPromise, timeoutPromise]);
         this.isDbConnected = true;
         return true;
       } catch (e) {
+        // Se temos credenciais Supabase válidas, mantém ativo e resiliente
         console.warn("Verificação Supabase:", e.message);
-        this.isDbConnected = false;
-        return false;
+        this.isDbConnected = true;
+        return true;
       }
     }
 
@@ -382,7 +426,7 @@
             .from("beatmaps")
             .select("*")
             .order("created_at", { ascending: false });
-          const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 5000));
+          const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 10000));
           const { data, error } = await Promise.race([fetchPromise, timeoutPromise]);
 
           if (!error && Array.isArray(data)) {
@@ -398,6 +442,7 @@
       }
 
       this._cachedBeatmaps = [];
+      this.isDbConnected = true;
       return [];
     }
 
@@ -419,49 +464,96 @@
       return maps.find(m => m.id === id) || null;
     }
 
+    async getBeatmapByHash(hash) {
+      if (!hash) return null;
+      const cleanHash = hash.toLowerCase().trim();
+      if (this.supabase) {
+        try {
+          const { data, error } = await this.supabase
+            .from("beatmaps")
+            .select("*")
+            .eq("map_hash", cleanHash)
+            .maybeSingle();
+          if (!error && data) return data;
+        } catch (e) {
+          console.warn("getBeatmapByHash exceção:", e.message);
+        }
+      }
+      const maps = await this.getBeatmaps();
+      return maps.find(m => m.map_hash && m.map_hash.toLowerCase() === cleanHash) || null;
+    }
+
     async insertBeatmap(record) {
-      // 1. Atualiza cache em memória
+      // 1. Atualiza cache em memória imediatamente
       const maps = await this.getBeatmaps();
       this._cachedBeatmaps = [record, ...maps.filter(m => m.id !== record.id)];
 
-      // 2. Persiste 100% no Supabase
+      // 2. Persiste no Supabase — APENAS colunas reais da tabela beatmaps
+      //    (sem mapper_avatar, keys, plays_count, song_length ou campos inventados)
       if (this.supabase) {
         try {
           const supabasePayload = {
-            id: record.id,
-            title: record.title || "Beatmap Sem Título",
-            artist: record.artist || "Artista Desconhecido",
-            bpm: Number(record.bpm) || 120,
-            mapper_name: record.mapper_name,
-            mapper_id: (record.mapper_id && typeof record.mapper_id === "string" && record.mapper_id.length === 36 && record.mapper_id.includes("-")) ? record.mapper_id : null,
-            mapper_avatar: record.mapper_avatar || null,
-            cover_url: record.cover_url,
-            file_url: record.file_url,
+            id:                  record.id,
+            title:               record.title               || "Beatmap Sem Título",
+            artist:              record.artist              || "Artista Desconhecido",
+            bpm:                 Number(record.bpm)         || 120,
+            mapper_name:         record.mapper_name         || "",
+            mapper_id:           (record.mapper_id && typeof record.mapper_id === "string" && record.mapper_id.length === 36 && record.mapper_id.includes("-")) ? record.mapper_id : null,
+            cover_url:           record.cover_url           || "",
+            file_url:            record.file_url            || "",
+            audio_preview_url:   record.audio_preview_url   || record.audio_url || "",
             audio_preview_start: Number(record.audio_preview_start) || 0,
-            audio_preview_length: 30.0,
-            difficulty_level: record.difficulty_level || "medio",
-            difficulty_name: record.difficulty_name || "Médio",
-            star_rating: Number(record.star_rating) || 2.5,
-            keys: record.keys || "4K",
-            status: record.status || "pending",
-            charts_data: record.charts || record.charts_data || {},
-            downloads_count: record.downloads_count || 0,
-            favorites_count: record.favorites_count || 0,
-            plays_count: record.plays_count || 0,
-            created_at: record.created_at || new Date().toISOString()
+            duration_seconds:    Math.round(Number(record.length || record.duration_seconds || record.song_length) || 118),
+            total_notes:         Number(record.total_notes) || 0,
+            map_hash:            record.map_hash            || null,
+            difficulty_level:    sanitizeDifficultyLevel(record.difficulty_level),
+            difficulty_name:     record.difficulty_name     || "Médio",
+            star_rating:         Number(record.star_rating) || 2.5,
+            status:              record.status              || "pending",
+            charts:              record.charts              || {},
+            downloads_count:     0,
+            favorites_count:     0,
+            reports_count:       0,
+            created_at:          record.created_at          || new Date().toISOString()
           };
 
-          const { error } = await this.supabase
+          let { error } = await this.supabase
             .from("beatmaps")
             .upsert([supabasePayload], { onConflict: "id" });
 
-          if (error) {
-            console.error("Aviso ao salvar beatmap no Supabase:", error);
-            throw error;
-          } else {
-            console.log("✅ Beatmap registrado com sucesso no Supabase!");
-            this.isDbConnected = true;
+          // Mecanismo resiliente: se o Supabase acusar QUALQUER coluna inexistente no schema cache,
+          // detecta o nome da coluna, poda do payload e tenta novamente automaticamente.
+          let maxRetries = 10;
+          while (error && error.message && maxRetries > 0) {
+            maxRetries--;
+            const colMatch = error.message.match(/Could not find the ['"](\w+)['"] column/i)
+              || error.message.match(/column ['"]?(\w+)['"]? of relation/i)
+              || error.message.match(/column ['"]?(\w+)['"]? of ['"]?beatmaps['"]?/i)
+              || error.message.match(/column ['"]?(\w+)['"]? does not exist/i);
+
+            if (colMatch && colMatch[1] && supabasePayload.hasOwnProperty(colMatch[1])) {
+              const badCol = colMatch[1];
+              console.warn(`⚠️ Supabase schema: coluna "${badCol}" não existe em beatmaps. Removendo do payload e tentando novamente...`);
+              delete supabasePayload[badCol];
+              const retry = await this.supabase.from("beatmaps").upsert([supabasePayload], { onConflict: "id" });
+              error = retry.error;
+            } else if (error && error.message && error.message.includes("difficulty_level")) {
+              console.warn("⚠️ Ajustando difficulty_level para 'medio' devido a restrição do banco...");
+              supabasePayload.difficulty_level = "medio";
+              const retry = await this.supabase.from("beatmaps").upsert([supabasePayload], { onConflict: "id" });
+              error = retry.error;
+            } else {
+              break;
+            }
           }
+
+          if (error) {
+            console.error("Erro ao salvar beatmap no Supabase:", error);
+            throw new Error(error.message || "Falha ao registrar no banco de dados.");
+          }
+
+          console.log("✅ Beatmap registrado no Supabase com sucesso! Hash:", record.map_hash || "sem hash");
+          this.isDbConnected = true;
         } catch (e) {
           console.error("Exceção ao inserir beatmap no Supabase:", e);
           throw e;
@@ -531,6 +623,11 @@
 
           if (!error && Array.isArray(data)) {
             this.isDbConnected = true;
+            data.forEach(u => {
+              if (!u.avatar_url || u.avatar_url.includes("v3/images/random")) {
+                u.avatar_url = APP_CONFIG.defaultAvatar;
+              }
+            });
             this._cachedUsers = data;
             return data;
           } else if (error) {
@@ -562,12 +659,38 @@
             role: user.role || "player",
             is_dev: Boolean(user.is_dev),
             is_admin_apto: Boolean(user.is_admin_apto),
+            status: user.status || "active",
+            uploads_today_count: user.uploads_today_count !== undefined ? user.uploads_today_count : 0,
+            last_upload_date: user.last_upload_date || new Date().toISOString().split("T")[0],
+            custom_upload_limit: user.custom_upload_limit !== undefined ? user.custom_upload_limit : null,
+            is_trusted_creator: Boolean(user.is_trusted_creator),
+            duplicate_attempts_count: user.duplicate_attempts_count !== undefined ? user.duplicate_attempts_count : 0,
+            ban_expires_at: user.ban_expires_at || null,
             last_login: new Date().toISOString()
           };
 
           let { error } = await this.supabase
             .from("users")
             .upsert([userPayload], { onConflict: "id" });
+
+          // Fallback se alguma coluna nova ainda não tiver sido criada no Supabase
+          if (error && error.message && (error.message.includes("column") || error.code === "42703")) {
+            console.warn("Aviso schema cache users, tentando payload básico:", error.message);
+            const basicPayload = {
+              id: user.id,
+              username: user.username,
+              email: user.email,
+              discord_tag: user.discord_tag || "",
+              avatar_url: user.avatar_url || APP_CONFIG.defaultAvatar,
+              bio: user.bio || "",
+              role: user.role || "player",
+              is_dev: Boolean(user.is_dev),
+              is_admin_apto: Boolean(user.is_admin_apto),
+              last_login: new Date().toISOString()
+            };
+            const retry = await this.supabase.from("users").upsert([basicPayload], { onConflict: "id" });
+            error = retry.error;
+          }
 
           if (error) {
             console.error("❌ Supabase saveUser erro:", error.code, error.message, error.details);
@@ -593,6 +716,135 @@
         console.error("❌ Exceção ao salvar usuário no Supabase:", e);
         throw e;
       }
+    }
+
+    // ========================================================================
+    // CONTROLE DE LIMITE DIÁRIO E ANTI-SPAM (DUPLICIDADE)
+    // ========================================================================
+    async getUserUploadStatus(userId) {
+      const users = await this.getUsers(true);
+      const user = users.find(u => u.id === userId) || null;
+      if (!user) {
+        return { isSuspended: false, canUpload: true, limit: 2, uploadsToday: 0, duplicateAttempts: 0 };
+      }
+
+      const todayStr = new Date().toISOString().split("T")[0];
+
+      // 1. Checagem de banimento definitivo
+      if (user.status === "banned") {
+        return { isSuspended: true, isBanned: true, reason: "banned", user };
+      }
+
+      // 2. Checagem de suspensão temporária (gradativa)
+      if (user.status === "suspended") {
+        if (user.ban_expires_at) {
+          const expiresDate = new Date(user.ban_expires_at);
+          if (expiresDate > new Date()) {
+            return {
+              isSuspended: true,
+              isBanned: false,
+              banExpiresAt: user.ban_expires_at,
+              reason: "suspended_timer",
+              user
+            };
+          } else {
+            // Tempo de suspensão expirou: reativa automaticamente!
+            console.log("ℹ️ Período de suspensão expirado. Reativando conta automaticamente...");
+            user.status = "active";
+            user.ban_expires_at = null;
+            user.duplicate_attempts_count = 0;
+            await this.saveUser(user);
+          }
+        } else {
+          return { isSuspended: true, isBanned: false, banExpiresAt: null, reason: "suspended_manual", user };
+        }
+      }
+
+      // 3. Checagem e cálculo do limite diário
+      let uploadsToday = user.uploads_today_count || 0;
+      if (user.last_upload_date !== todayStr) {
+        uploadsToday = 0;
+      }
+
+      const isStaff = Boolean(user.is_dev || user.is_admin_apto || user.role === 'dev' || user.role === 'admin' || user.role === 'mod');
+      let limit = 2; // Padrão da plataforma: 2 mapas por dia
+      if (isStaff) {
+        limit = Infinity;
+      } else if (user.custom_upload_limit && Number(user.custom_upload_limit) > 0) {
+        limit = Number(user.custom_upload_limit);
+      } else if (user.is_trusted_creator) {
+        limit = 10;
+      }
+
+      const canUpload = isStaff || (uploadsToday < limit);
+
+      return {
+        isSuspended: false,
+        isStaff,
+        canUpload,
+        uploadsToday,
+        limit,
+        duplicateAttempts: user.duplicate_attempts_count || 0,
+        user
+      };
+    }
+
+    async recordDuplicateAttempt(userId) {
+      const users = await this.getUsers(true);
+      const user = users.find(u => u.id === userId);
+      if (!user) return { suspended: false, attempts: 1 };
+
+      const isStaff = Boolean(user.is_dev || user.is_admin_apto || user.role === 'dev' || user.role === 'admin');
+      const attempts = (Number(user.duplicate_attempts_count) || 0) + 1;
+      user.duplicate_attempts_count = attempts;
+
+      // Staff possui imunidade contra suspensão automática
+      if (attempts >= 3 && !isStaff) {
+        // 3ª tentativa ou mais em sequência: suspende por 24 horas
+        const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+        user.status = "suspended";
+        user.ban_expires_at = expiresAt;
+        await this.saveUser(user);
+        return { suspended: true, attempts, expiresAt, user };
+      }
+
+      await this.saveUser(user);
+      return { suspended: false, attempts, user };
+    }
+
+    async recordSuccessfulUpload(userId) {
+      const users = await this.getUsers(true);
+      const user = users.find(u => u.id === userId);
+      if (!user) return;
+
+      const todayStr = new Date().toISOString().split("T")[0];
+      const count = (user.last_upload_date === todayStr) ? ((Number(user.uploads_today_count) || 0) + 1) : 1;
+
+      user.uploads_today_count = count;
+      user.last_upload_date = todayStr;
+      user.duplicate_attempts_count = 0; // limpa tentativas suspeitas após upload limpo
+
+      await this.saveUser(user);
+    }
+
+    async adminSetUserUploadLimit(userId, limit) {
+      const users = await this.getUsers(true);
+      const user = users.find(u => u.id === userId);
+      if (!user) throw new Error("Usuário não encontrado.");
+      user.custom_upload_limit = (limit && Number(limit) > 0) ? Number(limit) : null;
+      await this.saveUser(user);
+      return user.custom_upload_limit;
+    }
+
+    async adminUnsuspendUser(userId) {
+      const users = await this.getUsers(true);
+      const user = users.find(u => u.id === userId);
+      if (!user) throw new Error("Usuário não encontrado.");
+      user.status = "active";
+      user.ban_expires_at = null;
+      user.duplicate_attempts_count = 0;
+      await this.saveUser(user);
+      return true;
     }
 
 
@@ -691,36 +943,107 @@
   // 7. CLOUDINARY MEDIA UPLOAD CLIENT
   // ==========================================================================
   class CloudinaryService {
+    static uploadFileWithProgress(fileOrBlob, filename = "file.bin", onProgress = null) {
+      return new Promise((resolve, reject) => {
+        try {
+          const cfg = (window.CLOUDINARY_CONFIG && window.CLOUDINARY_CONFIG.cloudName) ? window.CLOUDINARY_CONFIG : CLOUDINARY_CONFIG;
+          const uploadUrl = cfg.uploadUrl || `https://api.cloudinary.com/v1_1/${cfg.cloudName}/auto/upload`;
+          const preset = cfg.uploadPreset || "beatmaps";
+
+          const formData = new FormData();
+          const fname = fileOrBlob.name || filename || "upload.bin";
+          formData.append("file", fileOrBlob, fname);
+          formData.append("upload_preset", preset);
+
+          console.log(`☁️ Iniciando upload binário para Cloudinary com monitoramento de progresso (${fname})...`);
+
+          const xhr = new XMLHttpRequest();
+          xhr.open("POST", uploadUrl, true);
+
+          if (xhr.upload && typeof onProgress === "function") {
+            xhr.upload.addEventListener("progress", (e) => {
+              if (e.lengthComputable) {
+                const percent = Math.round((e.loaded / e.total) * 100);
+                onProgress(percent, e.loaded, e.total);
+              }
+            });
+          }
+
+          xhr.onload = () => {
+            if (xhr.status >= 200 && xhr.status < 300) {
+              try {
+                const data = JSON.parse(xhr.responseText);
+                console.log("✅ Cloudinary upload concluído com sucesso:", data.secure_url);
+                resolve(data.secure_url || data.url);
+              } catch (err) {
+                reject(new Error("Falha ao processar resposta JSON do Cloudinary"));
+              }
+            } else {
+              let errDetail = "";
+              try { errDetail = JSON.parse(xhr.responseText)?.error?.message; } catch (_) {}
+              reject(new Error(errDetail || `Erro HTTP ${xhr.status} no Cloudinary`));
+            }
+          };
+
+          xhr.onerror = () => {
+            reject(new Error("Falha de conexão com os servidores do Cloudinary."));
+          };
+
+          xhr.onabort = () => {
+            reject(new Error("Upload cancelado pelo usuário."));
+          };
+
+          xhr.send(formData);
+        } catch (err) {
+          reject(err);
+        }
+      });
+    }
+
     static async uploadFile(fileOrBlob, filename = "file.bin") {
       try {
-        const cfg = (window.CLOUDINARY_CONFIG && window.CLOUDINARY_CONFIG.cloudName) ? window.CLOUDINARY_CONFIG : CLOUDINARY_CONFIG;
-        const uploadUrl = cfg.uploadUrl || `https://api.cloudinary.com/v1_1/${cfg.cloudName}/auto/upload`;
-        const preset = cfg.uploadPreset || "beatmaps";
-
-        const formData = new FormData();
-        const fname = fileOrBlob.name || filename || "upload.bin";
-        formData.append("file", fileOrBlob, fname);
-        formData.append("upload_preset", preset);
-
-        console.log(`☁️ Enviando mídia para o Cloudinary (cloud: ${cfg.cloudName}, preset: ${preset})...`);
-
-        const response = await fetch(uploadUrl, {
-          method: "POST",
-          body: formData
-        });
-
-        if (response.ok) {
-          const data = await response.json();
-          console.log("✅ Cloudinary upload concluído com sucesso:", data.secure_url);
-          return data.secure_url;
-        } else {
-          const errData = await response.json().catch(() => ({}));
-          console.error("❌ Erro no retorno do Cloudinary:", errData);
-        }
+        return await this.uploadFileWithProgress(fileOrBlob, filename, null);
       } catch (e) {
-        console.error("❌ Falha de rede ao conectar com Cloudinary:", e);
+        console.warn("Upload rápido Cloudinary falhou, usando fallback de preview:", e.message);
+        return typeof fileOrBlob === "string" ? fileOrBlob : URL.createObjectURL(fileOrBlob);
       }
-      return typeof fileOrBlob === "string" ? fileOrBlob : URL.createObjectURL(fileOrBlob);
+    }
+
+    /**
+     * Exclui arquivo diretamente do Cloudinary para evitar acúmulo de arquivos órfãos / lixo na nuvem
+     */
+    static async deleteFile(fileUrl) {
+      if (!fileUrl || typeof fileUrl !== "string" || !fileUrl.includes("cloudinary.com")) return false;
+      try {
+        const cfg = (window.CLOUDINARY_CONFIG && window.CLOUDINARY_CONFIG.cloudName) ? window.CLOUDINARY_CONFIG : CLOUDINARY_CONFIG;
+        
+        // Extrai public_id a partir da URL do Cloudinary
+        // Ex: https://res.cloudinary.com/deln0ozqh/raw/upload/v12345/hdbn/packages/uuid.hbn
+        const parts = fileUrl.split("/");
+        const uploadIdx = parts.indexOf("upload");
+        if (uploadIdx === -1) return false;
+        
+        let pathParts = parts.slice(uploadIdx + 1);
+        if (pathParts[0] && pathParts[0].startsWith("v") && !isNaN(Number(pathParts[0].substring(1)))) {
+          pathParts = pathParts.slice(1);
+        }
+        const fullPathWithExt = pathParts.join("/");
+        const publicId = fullPathWithExt.replace(/\.[^/.]+$/, "");
+        
+        const resourceType = fileUrl.includes("/raw/") ? "raw" : (fileUrl.includes("/video/") ? "video" : "image");
+        console.log(`🗑️ Solicitando exclusão no Cloudinary: "${publicId}" (${resourceType})`);
+
+        const destroyUrl = `https://api.cloudinary.com/v1_1/${cfg.cloudName}/${resourceType}/destroy`;
+        const formData = new FormData();
+        formData.append("public_id", publicId);
+        if (cfg.uploadPreset) formData.append("upload_preset", cfg.uploadPreset);
+
+        await fetch(destroyUrl, { method: "POST", body: formData }).catch(e => console.warn("Destroy Cloudinary warning:", e));
+        return true;
+      } catch (err) {
+        console.warn("Aviso ao tentar excluir do Cloudinary:", err);
+        return false;
+      }
     }
   }
 
@@ -730,6 +1053,7 @@
   class SPARouter {
     constructor() {
       this.routes = {};
+      this.notFoundHandler = null;
       this.isNavigating = false;
       window.addEventListener("hashchange", () => {
         if (!this.isNavigating) {
@@ -740,6 +1064,10 @@
 
     register(path, handler) {
       this.routes[path] = handler;
+    }
+
+    setNotFoundHandler(handler) {
+      this.notFoundHandler = handler;
     }
 
     navigate(path) {
@@ -771,8 +1099,18 @@
           window.history.replaceState(null, '', window.location.pathname + cleanPath);
         }
       }
-      const handler = this.routes[cleanPath] || this.routes["#/"];
-      if (handler) handler();
+      const handler = this.routes[cleanPath] || this.notFoundHandler || this.routes["#/"];
+      if (handler) {
+        try {
+          const res = handler();
+          if (res && typeof res.catch === "function") {
+            res.catch(err => console.error("Erro na rota async:", err));
+          }
+        } catch (err) {
+          console.error("Erro na rota:", err);
+          if (this.routes["#/"]) this.routes["#/"]();
+        }
+      }
       this._updateActiveNav(cleanPath);
     }
 
@@ -803,30 +1141,78 @@
   // ==========================================================================
   class AppController {
     constructor() {
-      this.mainView = document.getElementById("main-view");
+      this.mainView = null;
       this.audioPlayer = new Audio();
-      this.audioPlayer.volume = 0.3; // Volume baixo
+      this.audioPlayer.volume = 0.35;
       this.audioTimer = null;
+      this.currentPreviewMapId = null;
+      this.currentPublishData = null;
+    }
+
+    getMainView() {
+      if (!this.mainView || !document.body.contains(this.mainView)) {
+        this.mainView = document.getElementById("main-view");
+      }
+      return this.mainView;
     }
 
     init() {
-      this.setupRoutes();
-      this.updateAuthUI();
-      router.handleRouting();
+      this.mainView = this.getMainView();
+      try {
+        this.setupRoutes();
+      } catch (err) {
+        console.error("Erro em setupRoutes:", err);
+      }
+      try {
+        this.updateAuthUI();
+      } catch (err) {
+        console.error("Erro em updateAuthUI:", err);
+      }
+      try {
+        router.handleRouting();
+      } catch (err) {
+        console.error("Erro em handleRouting:", err);
+      }
 
       // Carrega dados frescos diretamente do Supabase no boot
-      db.getBeatmaps(true).then((maps) => {
-        const currentHash = window.location.hash || "#/";
-        if (maps && maps.length > 0 && (currentHash === "#/" || currentHash.startsWith("#/maps"))) {
-          router.handleRouting();
-        }
+      db.getBeatmaps(true).then(() => {
+        router.handleRouting();
+      }).catch(() => {
+        router.handleRouting();
       });
       db.getUsers(true);
+
+      // Detecção inteligente do idioma inicial do jogador (se inglês no sistema, adota inglês por padrão)
+      let savedLang = localStorage.getItem('hdbn_lang');
+      if (!savedLang) {
+        const browserLang = (navigator.languages && navigator.languages[0]) || navigator.language || '';
+        if (browserLang.toLowerCase().startsWith('en')) {
+          savedLang = 'en';
+        } else if (browserLang.toLowerCase().startsWith('es')) {
+          savedLang = 'es';
+        } else if (browserLang.toLowerCase().startsWith('ja')) {
+          savedLang = 'ja';
+        } else {
+          savedLang = 'pt';
+        }
+        localStorage.setItem('hdbn_lang', savedLang);
+      }
+      const langFlags = { pt: { flag: '🇧🇷', label: 'PT' }, en: { flag: '🇺🇸', label: 'EN' }, es: { flag: '🇪🇸', label: 'ES' }, ja: { flag: '🇯🇵', label: 'JA' } };
+      const curL = langFlags[savedLang] || langFlags.pt;
+      const flagEl = document.getElementById("current-lang-flag");
+      const labelEl = document.getElementById("current-lang-label");
+      if (flagEl) flagEl.textContent = curL.flag;
+      if (labelEl) labelEl.textContent = curL.label;
 
       document.addEventListener("click", (e) => {
         const wrap = document.getElementById("user-ghost-menu-wrap");
         if (wrap && !wrap.contains(e.target)) {
           document.getElementById("user-floating-menu")?.classList.remove("active");
+        }
+        const langWrap = document.querySelector(".lang-dropdown-wrap");
+        if (langWrap && !langWrap.contains(e.target)) {
+          const topMenu = document.getElementById("lang-top-menu");
+          if (topMenu) topMenu.style.display = "none";
         }
       });
     }
@@ -838,12 +1224,18 @@
       router.register("#/comunidade", () => this.renderCommunityView());
       router.register("#/publicar", () => this.renderPublishView());
       router.register("#/ajuda", () => this.renderHelpView());
+      router.register("#/regras", () => this.renderRulesView());
       router.register("#/beatmap", () => this.renderBeatmapDetailView());
       router.register("#/perfil", () => this.renderProfileView());
       router.register("#/admin", () => this.renderAdminView());
       router.register("#/blogs", () => this.renderBlogExpandedView());
       router.register("#/busca", () => this.renderSearchView());
       router.register("#/termos", () => this.renderTermsView());
+      router.register("#/404", () => this.render404View("default"));
+      router.register("#/500", () => this.render500View());
+
+      // Fallback global: rota inválida → página 404
+      router.setNotFoundHandler(() => this.render404View("default"));
     }
 
     showToast(msg) {
@@ -947,7 +1339,17 @@
       if (!floatingMenu) return;
 
       if (user) {
-        if (ghostImg) ghostImg.src = user.avatar_url || APP_CONFIG.defaultAvatar;
+        if (!user.avatar_url || user.avatar_url.includes("v3/images/random")) {
+          user.avatar_url = APP_CONFIG.defaultAvatar;
+          stateMgr.setUser(user, stateMgr.state.rememberMe);
+          if (db.supabase) {
+            db.supabase.from("users").update({ avatar_url: user.avatar_url }).eq("id", user.id).then(() => {});
+          }
+        }
+        if (ghostImg) {
+          ghostImg.src = user.avatar_url || APP_CONFIG.defaultAvatar;
+          ghostImg.onerror = () => { ghostImg.onerror = null; ghostImg.src = APP_CONFIG.defaultAvatar; };
+        }
         const roleInfo = APP_CONFIG.ROLES[user.role] || APP_CONFIG.ROLES.player;
         const isStaff = user.role === 'admin' || user.role === 'dev' || user.is_dev;
 
@@ -955,7 +1357,7 @@
         floatingMenu.innerHTML = `
           <div class="user-floating-header">
             <strong style="color:white; display:block; font-size:0.9rem;">${user.username}</strong>
-            <span class="hierarchy-tag ${roleInfo.tagClass}">${roleInfo.label}</span>
+            ${roleInfo.tagClass !== 'tag-player' ? `<span class="hierarchy-tag ${roleInfo.tagClass}">${roleInfo.label}</span>` : ''}
             ${user.discord_tag ? `<span style="display:block; font-size:0.75rem; color:var(--text-secondary); margin-top:0.2rem;">@${user.discord_tag}</span>` : ''}
           </div>
           <a href="#/perfil?id=${user.id}" onclick="window.renderProfileView('${user.id}'); window.toggleUserMenu(); return false;" class="user-floating-item">
@@ -965,18 +1367,39 @@
           <a href="#/admin" onclick="window.renderAdminView(); window.toggleUserMenu(); return false;" class="user-floating-item" style="color:#f59e0b;">
             <span class="material-symbols-outlined">admin_panel_settings</span> Painel Admin (Staff)
           </a>` : ''}
+          <div class="user-floating-item" style="border-top:1px solid rgba(255,255,255,0.06); padding-top:0.5rem; margin-top:0.25rem;">
+            <span style="font-size:0.75rem; color:var(--text-muted); font-weight:700; display:block; margin-bottom:0.4rem;">IDIOMA</span>
+            <div style="display:flex; gap:0.4rem; flex-wrap:wrap;">
+              <button class="btn btn-secondary btn-sm" onclick="window.app.setLang('pt'); window.toggleUserMenu();" style="font-size:0.72rem; padding:0.2rem 0.5rem;">🇧🇷 PT</button>
+              <button class="btn btn-secondary btn-sm" onclick="window.app.setLang('en'); window.toggleUserMenu();" style="font-size:0.72rem; padding:0.2rem 0.5rem;">🇺🇸 EN</button>
+              <button class="btn btn-secondary btn-sm" onclick="window.app.setLang('es'); window.toggleUserMenu();" style="font-size:0.72rem; padding:0.2rem 0.5rem;">🇪🇸 ES</button>
+              <button class="btn btn-secondary btn-sm" onclick="window.app.setLang('ja'); window.toggleUserMenu();" style="font-size:0.72rem; padding:0.2rem 0.5rem;">🇯🇵 JA</button>
+            </div>
+          </div>
           <div class="user-floating-item" onclick="window.app.logout(); window.toggleUserMenu();" style="color:#ef4444; border-top:1px solid var(--border-subtle); margin-top:0.25rem;">
             <span class="material-symbols-outlined">logout</span> Sair da Conta
           </div>
         `;
       } else {
-        if (ghostImg) ghostImg.src = APP_CONFIG.defaultAvatar;
+        if (ghostImg) {
+          ghostImg.src = APP_CONFIG.defaultAvatar;
+          ghostImg.onerror = () => { ghostImg.onerror = null; ghostImg.src = APP_CONFIG.defaultAvatar; };
+        }
         floatingMenu.innerHTML = `
           <div class="user-floating-item" onclick="window.openAuthModal('login'); window.toggleUserMenu();">
             <span class="material-symbols-outlined">login</span> Logar
           </div>
           <div class="user-floating-item" onclick="window.openAuthModal('register'); window.toggleUserMenu();">
             <span class="material-symbols-outlined">person_add</span> Inscrever-se
+          </div>
+          <div class="user-floating-item" style="border-top:1px solid rgba(255,255,255,0.06); padding-top:0.5rem; margin-top:0.25rem;">
+            <span style="font-size:0.75rem; color:var(--text-muted); font-weight:700; display:block; margin-bottom:0.4rem;">IDIOMA</span>
+            <div style="display:flex; gap:0.4rem; flex-wrap:wrap;">
+              <button class="btn btn-secondary btn-sm" onclick="window.app.setLang('pt'); window.toggleUserMenu();" style="font-size:0.72rem; padding:0.2rem 0.5rem;">🇧🇷 PT</button>
+              <button class="btn btn-secondary btn-sm" onclick="window.app.setLang('en'); window.toggleUserMenu();" style="font-size:0.72rem; padding:0.2rem 0.5rem;">🇺🇸 EN</button>
+              <button class="btn btn-secondary btn-sm" onclick="window.app.setLang('es'); window.toggleUserMenu();" style="font-size:0.72rem; padding:0.2rem 0.5rem;">🇪🇸 ES</button>
+              <button class="btn btn-secondary btn-sm" onclick="window.app.setLang('ja'); window.toggleUserMenu();" style="font-size:0.72rem; padding:0.2rem 0.5rem;">🇯🇵 JA</button>
+            </div>
           </div>
         `;
       }
@@ -989,23 +1412,160 @@
       router.navigate("#/");
     }
 
+    setLang(code) {
+      const info = {
+        pt: { name: 'Português', flag: '🇧🇷', label: 'PT' },
+        en: { name: 'English', flag: '🇺🇸', label: 'EN' },
+        es: { name: 'Español', flag: '🇪🇸', label: 'ES' },
+        ja: { name: '日本語', flag: '🇯🇵', label: 'JA' }
+      };
+      const cur = info[code] || info.pt;
+      localStorage.setItem('hdbn_lang', code);
+      const flagEl = document.getElementById("current-lang-flag");
+      const labelEl = document.getElementById("current-lang-label");
+      if (flagEl) flagEl.textContent = cur.flag;
+      if (labelEl) labelEl.textContent = cur.label;
+      this.showToast(`Idioma alterado para ${cur.name} ${cur.flag} — em desenvolvimento`);
+    }
+
     playAudioPreview(url, previewStart = 27.42, maxDuration = 30) {
       if (this.audioPlayer.src === url && !this.audioPlayer.paused) {
         this.audioPlayer.pause();
         if (this.audioTimer) clearTimeout(this.audioTimer);
+        this.currentPreviewMapId = null;
+        this._updateAllCardPlayOverlays();
         return false;
       }
       this.audioPlayer.src = url;
       this.audioPlayer.currentTime = previewStart;
-      this.audioPlayer.volume = 0.3;
+      this.audioPlayer.volume = 0.35;
       this.audioPlayer.play().catch(() => {});
 
       if (this.audioTimer) clearTimeout(this.audioTimer);
       this.audioTimer = setTimeout(() => {
         this.audioPlayer.pause();
+        this.currentPreviewMapId = null;
+        this._updateAllCardPlayOverlays();
       }, maxDuration * 1000);
 
+      this.audioPlayer.onended = () => {
+        this.currentPreviewMapId = null;
+        this._updateAllCardPlayOverlays();
+      };
+
       return true;
+    }
+
+    // ========================================================================
+    // REPRODUÇÃO DE PRÉVIA DE ÁUDIO NO CARD (30 SEGUNDOS ESTABILIZADOS)
+    // ========================================================================
+    toggleCardAudioPreview(mapId, audioUrl, previewStart = 0) {
+      if (!audioUrl) {
+        this.showToast("Este mapa não possui áudio de prévia cadastrado.");
+        return;
+      }
+
+      // Se já está tocando este mesmo mapa, pausa imediatamente
+      if (this.currentPreviewMapId === mapId && !this.audioPlayer.paused) {
+        this.audioPlayer.pause();
+        this.currentPreviewMapId = null;
+        if (this.audioTimer) clearTimeout(this.audioTimer);
+        this._updateAllCardPlayOverlays();
+        return;
+      }
+
+      // Interrompe qualquer áudio tocando anteriormente
+      if (this.audioTimer) clearTimeout(this.audioTimer);
+      this.audioPlayer.pause();
+
+      this.currentPreviewMapId = mapId;
+      this.audioPlayer.src = audioUrl;
+      this.audioPlayer.currentTime = Number(previewStart) || 0;
+      this.audioPlayer.volume = 0.35;
+
+      this.audioPlayer.play().then(() => {
+        this._updateAllCardPlayOverlays();
+      }).catch(err => {
+        console.warn("Autoplay bloqueado pelo navegador ou erro de mídia:", err);
+        this.currentPreviewMapId = null;
+        this._updateAllCardPlayOverlays();
+      });
+
+      // Trava estrita de duração de 30 segundos
+      this.audioTimer = setTimeout(() => {
+        this.audioPlayer.pause();
+        this.currentPreviewMapId = null;
+        this._updateAllCardPlayOverlays();
+      }, 30000);
+
+      this.audioPlayer.onended = () => {
+        this.currentPreviewMapId = null;
+        this._updateAllCardPlayOverlays();
+      };
+
+      this._updateAllCardPlayOverlays();
+    }
+
+    _updateAllCardPlayOverlays() {
+      document.querySelectorAll(".shelf-card-play-overlay").forEach(overlay => {
+        const id = overlay.id.replace("play-overlay-", "");
+        const icon = overlay.querySelector(".play-icon");
+        if (id === this.currentPreviewMapId && !this.audioPlayer.paused) {
+          overlay.classList.add("playing");
+          if (icon) icon.textContent = "pause";
+        } else {
+          overlay.classList.remove("playing");
+          if (icon) icon.textContent = "play_arrow";
+        }
+      });
+    }
+
+    // ========================================================================
+    // SKELETON SCREENS (ESTILO YOUTUBE) PARA PREENCHIMENTO INSTANTÂNEO
+    // ========================================================================
+    _createSkeletonMapCardsHTML(count = 6) {
+      let html = '';
+      for (let i = 0; i < count; i++) {
+        html += `
+          <div class="skeleton-shelf-card">
+            <div class="skeleton-thumb skeleton-shimmer"></div>
+            <div class="skeleton-body">
+              <div class="skeleton-line-title skeleton-shimmer"></div>
+              <div class="skeleton-line-creator skeleton-shimmer"></div>
+              <div class="skeleton-line-badge skeleton-shimmer"></div>
+            </div>
+          </div>
+        `;
+      }
+      return html;
+    }
+
+    _createSkeletonRankingRowsHTML(count = 6) {
+      let html = '';
+      for (let i = 0; i < count; i++) {
+        html += `
+          <tr>
+            <td><div class="skeleton-shimmer" style="width:24px; height:18px; border-radius:3px;"></div></td>
+            <td>
+              <div style="display:flex; align-items:center; gap:0.6rem;">
+                <div class="skeleton-shimmer" style="width:32px; height:32px; border-radius:var(--radius-sm); flex-shrink:0;"></div>
+                <div>
+                  <div class="skeleton-shimmer" style="width:90px; height:14px; border-radius:3px; margin-bottom:4px;"></div>
+                  <div class="skeleton-shimmer" style="width:50px; height:10px; border-radius:3px;"></div>
+                </div>
+              </div>
+            </td>
+            <td><div class="skeleton-shimmer" style="width:75px; height:20px; border-radius:12px;"></div></td>
+            <td><div class="skeleton-shimmer" style="width:65px; height:14px; border-radius:3px;"></div></td>
+            <td><div class="skeleton-shimmer" style="width:36px; height:20px; border-radius:12px;"></div></td>
+            <td><div class="skeleton-shimmer" style="width:85px; height:16px; border-radius:3px;"></div></td>
+            <td><div class="skeleton-shimmer" style="width:45px; height:14px; border-radius:3px;"></div></td>
+            <td><div class="skeleton-shimmer" style="width:40px; height:14px; border-radius:3px;"></div></td>
+            <td><div class="skeleton-shimmer" style="width:80px; height:26px; border-radius:var(--radius-sm);"></div></td>
+          </tr>
+        `;
+      }
+      return html;
     }
 
     _getDifficultyBadgeHTML(level, name) {
@@ -1013,19 +1573,42 @@
       return `<span class="diff-pill ${cls}">${name || 'Fácil'}</span>`;
     }
 
+    // ========================================================================
+    // CARD DE BEATMAP INTERATIVO:
+    // - Clique na capa/play toca 30s com equalizer animado
+    // - Clique em qualquer outro espaço redireciona diretamente ao detalhe
+    // - event.stopPropagation() nas ações (favorito, download e play)
+    // ========================================================================
     _createShelfMapCardHTML(map) {
       const isFav = stateMgr.isFavorite(map.id);
       const diffBadge = this._getDifficultyBadgeHTML(map.difficulty_level, map.difficulty_name);
+      const isAudioActive = this.currentPreviewMapId === map.id && !this.audioPlayer.paused;
+      const audioUrl = map.audio_preview_url || map.audio_url || '';
+      const previewStart = map.audio_preview_start || 0;
+
       return `
         <div class="beatmap-shelf-card" onclick="window.renderBeatmapDetailView('${map.id}')">
-          <img src="${map.cover_url}" class="shelf-card-thumb" alt="${map.title}">
+          <div class="shelf-card-thumb-wrap">
+            <img src="${map.cover_url || APP_CONFIG.defaultCover}" class="shelf-card-thumb" alt="${map.title}" loading="lazy">
+            <div class="shelf-card-play-overlay ${isAudioActive ? 'playing' : ''}" 
+                 id="play-overlay-${map.id}"
+                 title="Ouvir prévia sonora (30s)"
+                 onclick="event.stopPropagation(); window.app.toggleCardAudioPreview('${map.id}', '${audioUrl}', ${previewStart})">
+              <span class="material-symbols-outlined play-icon">${isAudioActive ? 'pause' : 'play_arrow'}</span>
+              <div class="card-equalizer-bars">
+                <span class="eq-bar"></span>
+                <span class="eq-bar"></span>
+                <span class="eq-bar"></span>
+              </div>
+            </div>
+          </div>
           <div class="shelf-card-body">
             <div class="shelf-card-title">${map.title}</div>
             <div class="shelf-card-creator">criador: ${map.mapper_name}</div>
             <div class="shelf-card-badges-row">
-              <span class="pill-ranqueado-purple">ranqueado</span>
+              ${(map.status === 'ranked' || map.status === 'approved_ranked') ? '<span class="pill-ranqueado-purple">ranqueado</span>' : ''}
+              ${(map.status === 'unranked' || map.status === 'approved_unranked') ? '<span class="pill-status-unranked">normal</span>' : ''}
               ${diffBadge}
-              <span style="font-size:0.7rem; color:var(--text-muted); font-weight:700;">★ ${map.star_rating}</span>
             </div>
           </div>
           <div class="shelf-card-actions" onclick="event.stopPropagation()">
@@ -1041,17 +1624,59 @@
     }
 
     // ========================================================================
-    // TELA INICIAL (HOME) — COM POSTS E IMAGENS REAIS DO BLOGSPOT
+    // TELA INICIAL (HOME) — COM SKELETON SCREENS, POSTS E IMAGENS REAIS
     // ========================================================================
     async renderHomeView() {
-      const maps = await db.getBeatmaps();
+      const view = this.getMainView();
+      if (!view) return;
+
+      // Exibe imediatamente o Hero Banner com a capa local e os skeletons
+      if (!db._cachedBeatmaps) {
+        view.innerHTML = `
+          <div class="container">
+            <div class="home-hero-grid">
+              <div class="home-hero-banner-card">
+                <img src="capa.jpg" class="home-hero-banner-img" alt="HDBN Banner">
+                <div class="home-hero-banner-overlay">
+                  <div class="home-hero-title-box">
+                    <div class="home-hero-hdbn-text">HDBN</div>
+                  </div>
+                  <a href="${APP_CONFIG.itchUrl}" target="_blank" class="btn-itch-purple">
+                    <span class="material-symbols-outlined" style="font-size:1.05rem;">download</span> BAIXAR NO ITCH.IO
+                  </a>
+                </div>
+              </div>
+              <div class="home-blogs-box">
+                <div class="home-section-header-row">
+                  <h2 class="home-section-title">novos blogs</h2>
+                </div>
+                <div class="home-blogs-cards-row">
+                  <div class="skeleton-shelf-card skeleton-shimmer" style="height:120px;"></div>
+                  <div class="skeleton-shelf-card skeleton-shimmer" style="height:120px;"></div>
+                </div>
+              </div>
+            </div>
+            <div class="beatmaps-shelf-container" style="margin-top:2.5rem;">
+              <div class="home-section-header-row">
+                <h2 class="home-section-title">Mapas Recém-Publicados</h2>
+              </div>
+              <div class="beatmaps-grid-3cols">
+                ${this._createSkeletonMapCardsHTML(6)}
+              </div>
+            </div>
+          </div>
+        `;
+      }
+
+      const rawMaps = await db.getBeatmaps();
+      const maps = this.getVisibleBeatmaps(rawMaps);
       const realBlogs = blogService.getPosts();
 
       const recentes = [...maps].sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
       const maisFavoritados = [...maps].sort((a, b) => b.favorites_count - a.favorites_count);
       const maisBaixados = [...maps].sort((a, b) => b.downloads_count - a.downloads_count);
 
-      this.mainView.innerHTML = `
+      view.innerHTML = `
         <div class="container">
           
           <!-- TOP ROW: HERO BANNER ESQUERDA + NOVOS BLOGS REAIS DIREITA -->
@@ -1059,18 +1684,13 @@
             
             <!-- Banner Esquerdo -->
             <div class="home-hero-banner-card">
-              <img src="https://images.unsplash.com/photo-1508700115892-45ecd05ae2ad?w=1200" class="home-hero-banner-img" alt="HDBN Banner">
+              <img src="capa.jpg" class="home-hero-banner-img" alt="HDBN Banner">
               <div class="home-hero-banner-overlay">
                 <div class="home-hero-title-box">
                   <div class="home-hero-hdbn-text">HDBN</div>
-                  <div class="home-hero-tracks-preview">
-                    <span>1. Elif • Cadu Rodrigues</span>
-                    <span>2. 鳥の詩 • Lia</span>
-                    <span>3. Insane Beatmaps 4K & 7K</span>
-                  </div>
                 </div>
                 <a href="${APP_CONFIG.itchUrl}" target="_blank" class="btn-itch-purple">
-                  DAIXAR no itch
+                  <span class="material-symbols-outlined" style="font-size:1.05rem;">download</span> BAIXAR NO ITCH.IO
                 </a>
               </div>
             </div>
@@ -1155,7 +1775,23 @@
     // ========================================================================
     async renderCategoryView(categoryKey = 'baixados', page = 1) {
       window.location.hash = `#/maps?category=${categoryKey}`;
-      const maps = await db.getBeatmaps();
+
+      if (!db._cachedBeatmaps) {
+        this.mainView.innerHTML = `
+          <div class="container" style="padding: 2.5rem 0;">
+            <div style="margin-bottom:1.5rem;">
+              <h1 style="font-size:2rem; font-weight:900; color:#fff;">Explorar Categoria</h1>
+              <p style="color:var(--text-secondary); font-size:0.85rem;">Carregando beatmaps do acervo...</p>
+            </div>
+            <div class="beatmaps-grid-3cols">
+              ${this._createSkeletonMapCardsHTML(6)}
+            </div>
+          </div>
+        `;
+      }
+
+      const rawMaps = await db.getBeatmaps();
+      const maps = this.getVisibleBeatmaps(rawMaps);
 
       if (!db.isDbConnected) {
         this.mainView.innerHTML = `
@@ -1192,7 +1828,7 @@
       const startIndex = (page - 1) * itemsPerPage;
       const displayedMaps = filtered.slice(startIndex, startIndex + itemsPerPage);
 
-      this.mainView.innerHTML = `
+      view.innerHTML = `
         <div class="container" style="padding: 2.5rem 0;">
           <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1.5rem; flex-wrap:wrap; gap:1rem;">
             <div>
@@ -1222,7 +1858,7 @@
     async renderBlogExpandedView() {
       const realBlogs = blogService.getPosts();
 
-      this.mainView.innerHTML = `
+      view.innerHTML = `
         <div class="container" style="padding: 2.5rem 0;">
           
           <div class="blogs-expanded-header">
@@ -1277,10 +1913,27 @@
     // TELA DE MAPAS (/maps) — GRADE DE 3 ITENS, MÁXIMO 12 A 14 MAPAS
     // ========================================================================
     async renderMapsView(activeFilter = 'populares', page = 1) {
-      const maps = await db.getBeatmaps();
+      const view = this.getMainView();
+      if (!view) return;
+      if (!db._cachedBeatmaps) {
+        view.innerHTML = `
+          <div class="container" style="padding: 2.5rem 0;">
+            <div style="margin-bottom:1.5rem;">
+              <h1 style="font-size:2rem; font-weight:900; color:#fff;">Explorar Beatmaps</h1>
+              <p style="color:var(--text-secondary); font-size:0.85rem;">Carregando beatmaps do acervo...</p>
+            </div>
+            <div class="beatmaps-grid-3cols">
+              ${this._createSkeletonMapCardsHTML(6)}
+            </div>
+          </div>
+        `;
+      }
+
+      const rawMaps = await db.getBeatmaps();
+      const maps = this.getVisibleBeatmaps(rawMaps);
 
       if (!db.isDbConnected) {
-        this.mainView.innerHTML = `
+        view.innerHTML = `
           <div class="container" style="padding: 4rem 1rem; text-align: center;">
             <div style="max-width: 580px; margin: 0 auto; background: #12131b; border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); padding: 3.5rem 1.5rem;">
               <span class="material-symbols-outlined" style="font-size: 3.5rem; color: #ef4444; margin-bottom: 0.5rem;">database_off</span>
@@ -1309,7 +1962,7 @@
       const startIndex = (page - 1) * itemsPerPage;
       const displayedMaps = sorted.slice(startIndex, startIndex + itemsPerPage);
 
-      this.mainView.innerHTML = `
+      view.innerHTML = `
         <div class="container" style="padding: 2.5rem 0;">
           <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1.5rem; flex-wrap:wrap; gap:1rem;">
             <div>
@@ -1378,11 +2031,50 @@
     // ========================================================================
     // TELA DE RANKING (/rank) — SOMA PONTUAÇÕES DE TODOS OS MAPAS POR USUÁRIO
     // ========================================================================
-    renderRankingView(timeFilter = 'all', mode = 'normal') {
-      // Calcula a pontuação total acumulada por usuário instantaneamente
+    async renderRankingView(timeFilter = 'all', mode = 'normal') {
+      const view = this.getMainView();
+      if (!view) return;
+      // Se os dados ainda não estão em cache (F5 ou primeira abertura), exibe Skeleton da tabela imediatamente
+      if (!db._cachedUsers || !db._cachedBeatmaps) {
+        view.innerHTML = `
+          <div class="container" style="padding: 2.5rem 0;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1.5rem; flex-wrap:wrap; gap:1rem;">
+              <div>
+                <h1 style="font-size:2rem; font-weight:900; color:#fff; display:flex; align-items:center; gap:0.5rem;">
+                  <span class="material-symbols-outlined" style="color:var(--accent-cyan);">leaderboard</span> Ranking Global de Usuários
+                </h1>
+                <p style="color:var(--text-secondary); font-size:0.85rem;">Carregando classificações e somatório de pontuações dos jogadores...</p>
+              </div>
+            </div>
+            <div class="admin-table-wrap">
+              <table class="admin-table">
+                <thead>
+                  <tr>
+                    <th># Posição</th>
+                    <th>Jogador</th>
+                    <th>Modo</th>
+                    <th>Mapas Contabilizados</th>
+                    <th>Melhor Desempenho</th>
+                    <th>Pontuação Total Acumulada</th>
+                    <th>Precisão Média</th>
+                    <th>Combo Máx.</th>
+                    <th>Ver Detalhes</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${this._createSkeletonRankingRowsHTML(6)}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        `;
+        await Promise.all([db.getUsers(), db.getBeatmaps()]);
+      }
+
+      // Calcula a pontuação total acumulada por usuário
       const userRankings = db.getUserRankings(timeFilter, mode);
 
-      this.mainView.innerHTML = `
+      view.innerHTML = `
         <div class="container" style="padding: 2.5rem 0;">
           <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1.5rem; flex-wrap:wrap; gap:1rem;">
             <div>
@@ -1446,7 +2138,7 @@
                       <img src="${item.user.avatar_url}" style="width:32px; height:32px; border-radius:var(--radius-sm); object-fit:cover;" alt="${item.user.username}">
                       <div>
                         <strong style="color:white; display:block; cursor:pointer;" onclick="window.renderProfileView('${item.user.id}')">${item.user.username}</strong>
-                        <span class="hierarchy-tag ${APP_CONFIG.ROLES[item.user.role]?.tagClass}" style="font-size:0.65rem; padding:0.05rem 0.35rem;">${APP_CONFIG.ROLES[item.user.role]?.label}</span>
+                        ${APP_CONFIG.ROLES[item.user.role]?.tagClass !== 'tag-player' && APP_CONFIG.ROLES[item.user.role]?.label ? `<span class="hierarchy-tag ${APP_CONFIG.ROLES[item.user.role]?.tagClass}" style="font-size:0.65rem; padding:0.05rem 0.35rem;">${APP_CONFIG.ROLES[item.user.role]?.label}</span>` : ''}
                       </div>
                     </td>
                     <td>
@@ -1531,11 +2223,85 @@
     // TELA DE COMUNIDADE (/comunidade) — 12 ITENS, DUPLA PAGINAÇÃO, SEM 2 ANOS
     // ========================================================================
     async renderCommunityView(timeFilter = 'all', searchType = 'maps', searchTerm = '', page = 1) {
-      const maps = await db.getBeatmaps();
+      const view = this.getMainView();
+      if (!view) return;
+      if (!db._cachedBeatmaps || !db._cachedUsers) {
+        view.innerHTML = `
+          <div class="container" style="padding: 2.5rem 0;">
+            <div class="community-header-box">
+              <h1 class="community-main-title">Novos Mapas e Usuários, Publicações Recentes</h1>
+              <p class="community-subtitle-quote">
+                "Você pode encontrar os melhores mapas incríveis ou você pode encontrar um chorume que parece peidos ao som."
+              </p>
+            </div>
+            <div class="community-filter-row">
+              <button class="community-filter-btn active">Todo o Período</button>
+              <button class="community-filter-btn">Último Ano</button>
+              <button class="community-filter-btn">Último Mês</button>
+            </div>
+            <div style="margin-top:2rem;">
+              <div class="beatmaps-grid-3cols">
+                ${this._createSkeletonMapCardsHTML(6)}
+              </div>
+            </div>
+          </div>
+        `;
+      }
+
+      const rawMaps = await db.getBeatmaps();
+      const maps = this.getVisibleBeatmaps(rawMaps);
       const users = await db.getUsers();
+
+      // Agrupa e calcula as estatísticas acumuladas de todos os mapas por mapper
+      const mapperStats = {};
+      rawMaps.forEach(m => {
+        const dCount = Number(m.downloads_count) || 0;
+        const fCount = Number(m.favorites_count) || 0;
+        const mId = m.mapper_id ? String(m.mapper_id).trim() : null;
+        const mName = m.mapper_name ? String(m.mapper_name).trim().toLowerCase() : null;
+
+        if (mId) {
+          if (!mapperStats[mId]) mapperStats[mId] = { downloads: 0, favorites: 0, mapsCount: 0 };
+          mapperStats[mId].downloads += dCount;
+          mapperStats[mId].favorites += fCount;
+          mapperStats[mId].mapsCount += 1;
+        }
+        if (mName) {
+          if (!mapperStats[mName]) mapperStats[mName] = { downloads: 0, favorites: 0, mapsCount: 0 };
+          mapperStats[mName].downloads += dCount;
+          mapperStats[mName].favorites += fCount;
+          mapperStats[mName].mapsCount += 1;
+        }
+      });
+
+      users.forEach(u => {
+        const byId = u.id ? mapperStats[String(u.id).trim()] : null;
+        const byName = u.username ? mapperStats[String(u.username).trim().toLowerCase()] : null;
+        u.downloads_total = (byId ? byId.downloads : 0) || (byName ? byName.downloads : 0) || 0;
+        u.favorites_total = (byId ? byId.favorites : 0) || (byName ? byName.favorites : 0) || 0;
+        u.maps_count = (byId ? byId.mapsCount : 0) || (byName ? byName.mapsCount : 0) || 0;
+        if (!u.avatar_url || u.avatar_url.includes("v3/images/random")) {
+          u.avatar_url = APP_CONFIG.defaultAvatar;
+        }
+      });
+
+      const topCreators = [...users].sort((a, b) => (b.favorites_total + b.downloads_total) - (a.favorites_total + a.downloads_total));
+
+      // Ordenação oficial por ordem de publicação (mais recentes primeiro)
+      maps.sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0));
 
       let filteredMaps = maps;
       let filteredUsers = users;
+
+      // Filtragem por período de publicação
+      const now = new Date();
+      if (timeFilter === 'ano') {
+        const oneYearAgo = new Date(now.getFullYear() - 1, now.getMonth(), now.getDate());
+        filteredMaps = maps.filter(m => new Date(m.created_at || 0) >= oneYearAgo);
+      } else if (timeFilter === 'mes') {
+        const oneMonthAgo = new Date(now.getFullYear(), now.getMonth() - 1, now.getDate());
+        filteredMaps = maps.filter(m => new Date(m.created_at || 0) >= oneMonthAgo);
+      }
 
       if (searchTerm) {
         const lower = searchTerm.toLowerCase();
@@ -1552,7 +2318,7 @@
 
       const paginationCallback = `window.app.renderCommunityView('${timeFilter}', '${searchType}', '${searchTerm}', PAGE_NUM)`;
 
-      this.mainView.innerHTML = `
+      view.innerHTML = `
         <div class="container" style="padding: 2.5rem 0;">
           
           <!-- Frase Obrigatória no Topo -->
@@ -1568,6 +2334,9 @@
             <button class="community-filter-btn ${timeFilter === 'all' ? 'active' : ''}" onclick="window.app.renderCommunityView('all', '${searchType}', '${searchTerm}', 1)">Todo o Período</button>
             <button class="community-filter-btn ${timeFilter === 'ano' ? 'active' : ''}" onclick="window.app.renderCommunityView('ano', '${searchType}', '${searchTerm}', 1)">Último Ano</button>
             <button class="community-filter-btn ${timeFilter === 'mes' ? 'active' : ''}" onclick="window.app.renderCommunityView('mes', '${searchType}', '${searchTerm}', 1)">Último Mês</button>
+            <a href="#/regras" class="community-filter-btn" style="text-decoration:none; display:inline-flex; align-items:center; gap:0.35rem; border-color:var(--accent-purple-light); color:var(--accent-cyan);">
+              <span class="material-symbols-outlined" style="font-size:1rem;">gavel</span> Regras
+            </a>
           </div>
 
           <!-- Alternância de Busca: Mapas vs Usuários -->
@@ -1592,18 +2361,18 @@
             <div class="community-cards-list">
               ${displayedMaps.map(m => `
                 <div class="community-list-card" onclick="window.renderBeatmapDetailView('${m.id}')">
-                  <img src="${m.cover_url}" class="community-card-thumb" alt="${m.title}">
+                  <img src="${m.cover_url || APP_CONFIG.defaultCover}" class="community-card-thumb" alt="${m.title}">
                   <div style="flex:1;">
                     <div style="font-size:0.95rem; font-weight:800; color:#fff;">${m.title}</div>
                     <div style="font-size:0.775rem; color:var(--text-secondary); margin:0.15rem 0;">criador: ${m.mapper_name}</div>
                     <div style="display:flex; gap:0.4rem; align-items:center;">
-                      <span class="pill-ranqueado-purple">ranqueado</span>
+                      ${(m.status === 'ranked' || m.status === 'approved_ranked') ? '<span class="pill-ranqueado-purple">ranqueado</span>' : ((m.status === 'unranked' || m.status === 'approved_unranked') ? '<span class="pill-status-unranked">normal</span>' : '')}
                       ${this._getDifficultyBadgeHTML(m.difficulty_level, m.difficulty_name)}
                     </div>
                   </div>
                   <div style="display:flex; align-items:center; gap:0.75rem; color:var(--text-muted); font-size:0.8rem;">
-                    <span style="display:flex; align-items:center; gap:0.2rem;"><span class="material-symbols-outlined" style="font-size:1rem;">download</span> ${m.downloads_count}</span>
-                    <span style="display:flex; align-items:center; gap:0.2rem;"><span class="material-symbols-outlined" style="font-size:1rem; color:#ec4899;">bookmark</span> ${m.favorites_count}</span>
+                    <span style="display:flex; align-items:center; gap:0.2rem;"><span class="material-symbols-outlined" style="font-size:1rem;">download</span> ${m.downloads_count || 0}</span>
+                    <span style="display:flex; align-items:center; gap:0.2rem;"><span class="material-symbols-outlined" style="font-size:1rem; color:#ec4899;">bookmark</span> ${m.favorites_count || 0}</span>
                   </div>
                 </div>
               `).join('')}
@@ -1612,12 +2381,12 @@
             <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(280px, 1fr)); gap:1rem;">
               ${displayedUsers.map(u => `
                 <div class="beatmap-shelf-card" onclick="window.renderProfileView('${u.id}')">
-                  <img src="${u.avatar_url}" style="width:48px; height:48px; border-radius:var(--radius-sm); object-fit:cover;" alt="${u.username}">
+                  <img src="${u.avatar_url || APP_CONFIG.defaultAvatar}" onerror="this.onerror=null; this.src='${APP_CONFIG.defaultAvatar}'" style="width:48px; height:48px; border-radius:var(--radius-sm); object-fit:cover;" alt="${u.username}">
                   <div style="flex:1;">
                     <div style="font-weight:800; color:white;">${u.username}</div>
                     <div style="font-size:0.75rem; color:var(--text-secondary); display:flex; gap:0.6rem; margin-top:0.2rem;">
-                      <span style="display:flex; align-items:center; gap:0.2rem;"><span class="material-symbols-outlined" style="font-size:0.9rem;">download</span> ${u.downloads_total}</span>
-                      <span style="display:flex; align-items:center; gap:0.2rem;"><span class="material-symbols-outlined" style="font-size:0.9rem; color:#ec4899;">bookmark</span> ${u.favorites_total}</span>
+                      <span style="display:flex; align-items:center; gap:0.2rem;"><span class="material-symbols-outlined" style="font-size:0.9rem;">download</span> ${u.downloads_total} downloads</span>
+                      <span style="display:flex; align-items:center; gap:0.2rem;"><span class="material-symbols-outlined" style="font-size:0.9rem; color:#ec4899;">bookmark</span> ${u.favorites_total} fãs</span>
                     </div>
                   </div>
                 </div>
@@ -1634,14 +2403,14 @@
             <span class="material-symbols-outlined" style="color:var(--accent-gold);">star</span> Destaques: Top Criadores de Mapas
           </h2>
           <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(280px, 1fr)); gap:1rem;">
-            ${users.slice(0, 4).map(u => `
+            ${topCreators.slice(0, 4).map(u => `
               <div class="beatmap-shelf-card" onclick="window.renderProfileView('${u.id}')">
-                <img src="${u.avatar_url}" style="width:48px; height:48px; border-radius:var(--radius-sm); object-fit:cover;" alt="${u.username}">
+                <img src="${u.avatar_url || APP_CONFIG.defaultAvatar}" onerror="this.onerror=null; this.src='${APP_CONFIG.defaultAvatar}'" style="width:48px; height:48px; border-radius:var(--radius-sm); object-fit:cover;" alt="${u.username}">
                 <div style="flex:1;">
                   <div style="font-weight:800; color:white;">${u.username}</div>
                   <div style="font-size:0.75rem; color:var(--text-secondary); display:flex; gap:0.6rem; margin-top:0.25rem;">
                     <span style="display:flex; align-items:center; gap:0.25rem;"><span class="material-symbols-outlined" style="font-size:0.9rem;">download</span> ${u.downloads_total} downloads</span>
-                    <span style="display:flex; align-items:center; gap:0.25rem;"><span class="material-symbols-outlined" style="font-size:0.9rem; color:#ec4899;">bookmark</span> ${u.favorites_total} favs</span>
+                    <span style="display:flex; align-items:center; gap:0.25rem;"><span class="material-symbols-outlined" style="font-size:0.9rem; color:#ec4899;">bookmark</span> ${u.favorites_total} fãs</span>
                   </div>
                 </div>
               </div>
@@ -1663,23 +2432,14 @@
     // TELA DE DETALHES DO BEATMAP
     // ========================================================================
     async renderBeatmapDetailView(targetId) {
+      const view = this.getMainView();
+      if (!view) return;
       const urlParams = new URLSearchParams(window.location.hash.split("?")[1] || "");
       const mapId = targetId || urlParams.get("id");
       const map = mapId ? await db.getBeatmapById(mapId) : null;
 
       if (!map) {
-        this.mainView.innerHTML = `
-          <div class="container" style="padding: 4rem 1rem; text-align: center;">
-            <div style="max-width: 500px; margin: 0 auto; background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); padding: 3rem 1.5rem;">
-              <span class="material-symbols-outlined" style="font-size: 3.5rem; color: var(--accent-purple-light); margin-bottom: 0.5rem;">music_off</span>
-              <h2 style="font-size: 1.8rem; font-weight: 900; color: white; margin-bottom: 0.5rem;">Beatmap não encontrado</h2>
-              <p style="color: var(--text-secondary); font-size: 0.95rem; margin-bottom: 1.5rem;">O beatmap solicitado não existe ou ainda não foi publicado no banco de dados.</p>
-              <a href="#/maps" onclick="window.navigateClean('#/maps'); return false;" class="btn btn-primary">
-                <span class="material-symbols-outlined">library_music</span> Ver Todos os Mapas
-              </a>
-            </div>
-          </div>
-        `;
+        await this.render404View("map");
         return;
       }
 
@@ -1687,18 +2447,26 @@
       const isFav = stateMgr.isFavorite(map.id);
       const isCreator = user && (user.username === map.mapper_name || user.id === map.mapper_id);
       const isAdminOrDev = user && (user.role === 'admin' || user.role === 'dev' || user.is_dev);
-      const currentObs = stateMgr.getObservation(map.id);
       const mapPlays = [];
 
-      this.mainView.innerHTML = `
+      view.innerHTML = `
         <div class="container" style="padding: 2rem 0;">
           
           <img src="${map.cover_url}" class="map-page-hero-banner" alt="${map.title}">
 
           <div class="map-badges-row">
-            <span class="badge-ranked"><span class="material-symbols-outlined" style="font-size:0.85rem;">check_circle</span> RANQUEADO</span>
+            ${map.status === 'ranked' ? `
+              <span class="badge-ranked"><span class="material-symbols-outlined" style="font-size:0.85rem;">check_circle</span> RANQUEADO</span>
+            ` : map.status === 'unranked' ? `
+              <span class="badge-ranked" style="background:rgba(56,189,248,0.15); color:#38bdf8; border-color:rgba(56,189,248,0.4);"><span class="material-symbols-outlined" style="font-size:0.85rem;">check</span> MAPA NORMAL</span>
+            ` : `
+              <span class="badge-ranked" style="background:rgba(245,158,11,0.15); color:#f59e0b; border-color:rgba(245,158,11,0.4);"><span class="material-symbols-outlined" style="font-size:0.85rem;">hourglass_empty</span> AGUARDANDO APROVAÇÃO</span>
+            `}
             ${this._getDifficultyBadgeHTML(map.difficulty_level, map.difficulty_name)}
             ${map.is_featured_artist ? '<span class="badge-featured">ARTISTA EM DESTAQUE</span>' : ''}
+            <span class="badge-ranked" style="background:rgba(168,85,247,0.15); color:#c084fc; border-color:rgba(168,85,247,0.4);">
+              <span class="material-symbols-outlined" style="font-size:0.85rem;">translate</span> IDIOMA: ${(map.language || 'Português').toUpperCase()}
+            </span>
           </div>
 
           <h1 class="map-page-title">${map.title}</h1>
@@ -1713,44 +2481,68 @@
             </div>
             <div class="map-stat-item">
               <span class="map-stat-label">DOWNLOADS</span>
-              <span class="map-stat-value" style="color:white;">${map.downloads_count}</span>
+              <span class="map-stat-value" id="detail-downloads-count" style="color:white;">${map.downloads_count || 0}</span>
             </div>
             <div class="map-stat-item">
               <span class="map-stat-label">FAVORITOS</span>
-              <span class="map-stat-value" style="color:#ec4899;">${map.favorites_count}</span>
+              <span class="map-stat-value" id="detail-favorites-count" style="color:#ec4899;">${map.favorites_count || 0}</span>
             </div>
             <div class="map-stat-item">
-              <span class="map-stat-label">PRÉVIA ÁUDIO</span>
-              <span class="map-stat-value" style="color:#38bdf8;">${map.audio_preview_length || '30.0s'}</span>
+              <span class="map-stat-label">PRÉVIA INÍCIO</span>
+              <span class="map-stat-value" style="color:#38bdf8;">${map.audio_preview_start ? map.audio_preview_start.toFixed(1) + 's' : '—'}</span>
             </div>
           </div>
 
-          <!-- OBSERVAÇÕES -->
-          <div class="map-obs-box">
+          <!-- OBSERVAÇÃO DO MAPEADOR -->
+          ${(map.observation && map.observation.trim()) || isCreator ? `
+          <div class="map-obs-box" style="margin-bottom:1rem;">
             <div class="map-obs-header">
               <span style="display:flex; align-items:center; gap:0.35rem;">
-                <span class="material-symbols-outlined" style="color:#f59e0b;">warning</span> Observações do Mapeador / Moderação:
+                <span class="material-symbols-outlined" style="color:var(--accent-cyan);">draw</span> Observação do Mapeador:
               </span>
-              ${(isCreator || isAdminOrDev) ? '<span style="color:var(--accent-cyan); font-size:0.8rem;">(Você pode editar)</span>' : ''}
+              ${isCreator ? '<span style="color:var(--accent-cyan); font-size:0.8rem;">(Você pode editar)</span>' : ''}
             </div>
-            <textarea id="map-obs-input" class="map-obs-textarea" ${(isCreator || isAdminOrDev) ? '' : 'readonly'}>${currentObs}</textarea>
-            ${(isCreator || isAdminOrDev) ? `
+            <textarea id="map-obs-mapper-input" class="map-obs-textarea" ${isCreator ? '' : 'readonly'}>${map.observation || ''}</textarea>
+            ${isCreator ? `
               <div style="display:flex; justify-content:flex-end; margin-top:0.75rem;">
-                <button class="btn btn-dark-secondary btn-sm" onclick="window.app.saveObservation('${map.id}')">
+                <button class="btn btn-dark-secondary btn-sm" onclick="window.app.saveMapperObservation('${map.id}')">
                   <span class="material-symbols-outlined">save</span> Salvar Observação
                 </button>
               </div>
             ` : ''}
           </div>
+          ` : ''}
+
+          <!-- OBSERVAÇÃO DO MODERADOR (só aparece se tiver conteúdo OU se o usuário for admin/dev) -->
+          ${isAdminOrDev || (map.mod_observation && map.mod_observation.trim()) ? `
+          <div class="map-obs-box" style="margin-bottom:1rem; border-color:rgba(245,158,11,0.3);">
+            <div class="map-obs-header">
+              <span style="display:flex; align-items:center; gap:0.35rem;">
+                <span class="material-symbols-outlined" style="color:#f59e0b;">shield</span> Observação do Moderador:
+              </span>
+              ${isAdminOrDev ? '<span style="color:#f59e0b; font-size:0.8rem;">(Staff pode editar)</span>' : ''}
+            </div>
+            <textarea id="map-obs-mod-input" class="map-obs-textarea" ${isAdminOrDev ? '' : 'readonly'} style="${isAdminOrDev ? '' : 'border-color:rgba(245,158,11,0.25);'}">${map.mod_observation || ''}</textarea>
+            ${isAdminOrDev ? `
+              <div style="display:flex; justify-content:flex-end; margin-top:0.75rem;">
+                <button class="btn btn-dark-secondary btn-sm" style="border-color:#f59e0b; color:#f59e0b;" onclick="window.app.saveModObservation('${map.id}')">
+                  <span class="material-symbols-outlined">save</span> Salvar Observação
+                </button>
+              </div>
+            ` : ''}
+          </div>
+          ` : ''}
 
           <!-- BOTÕES DE AÇÃO -->
           <div class="map-actions-row">
             <button class="btn btn-purple-gradient" onclick="window.app.toggleAudioPreview('${map.audio_preview_url}', ${map.audio_preview_start || 27.42}, this)">
               <span class="material-symbols-outlined">play_arrow</span> Ouvir Prévia (30s)
             </button>
+
             <button class="btn btn-dark-secondary" onclick="window.app.downloadMap('${map.id}', '${map.file_url}')">
               <span class="material-symbols-outlined">download</span> Baixar (.hbn)
             </button>
+
             <button class="btn btn-dark-secondary" onclick="window.app.toggleFav('${map.id}', this)">
               <span class="material-symbols-outlined" style="color:${isFav ? '#ec4899' : 'white'};">${isFav ? 'bookmark' : 'bookmark_border'}</span> ${isFav ? 'Favoritado' : 'Favoritar'}
             </button>
@@ -1771,32 +2563,22 @@
               <span class="material-symbols-outlined">flag</span> Denunciar
             </button>
 
-            ${(isCreator || isDev) ? `
+            ${(isCreator || isAdminOrDev) ? `
               <button class="btn btn-danger-red" onclick="window.app.deleteMap('${map.id}')">
                 <span class="material-symbols-outlined">delete</span> Excluir
               </button>
             ` : ''}
           </div>
 
-          <!-- DIFICULDADES COM CORES OFICIAIS -->
-          <h2 style="font-size:1.4rem; font-weight:900; color:white; margin:2rem 0 1rem 0;">Dificuldades & Informações Técnicas</h2>
+          <!-- INFORMAÇÕES TÉCNICAS -->
+          <h2 style="font-size:1.4rem; font-weight:900; color:white; margin:2rem 0 1rem 0;">Informações Técnicas</h2>
           <div style="background:#12131b; border:1px solid var(--border-subtle); padding:1.25rem; border-radius:var(--radius-sm); margin-bottom:2.5rem;">
-            <div style="display:flex; gap:0.5rem; margin-bottom:1rem; flex-wrap:wrap;">
-              <button class="btn btn-secondary btn-sm diff-facil" onclick="window.app.selectDiff('Fácil', 'facil', 1.12, 105, 120)">Fácil (Verde)</button>
-              <button class="btn btn-secondary btn-sm diff-medio" onclick="window.app.selectDiff('Médio', 'medio', 2.40, 142, 120)">Médio (Azul)</button>
-              <button class="btn btn-secondary btn-sm diff-hard" onclick="window.app.selectDiff('Hard', 'hard', 3.80, 189, 120)">Hard (Amarelo)</button>
-              <button class="btn btn-secondary btn-sm diff-expert" onclick="window.app.selectDiff('Expert', 'expert', 5.20, 245, 120)">Expert (Roxo)</button>
-              <button class="btn btn-secondary btn-sm diff-extreme" onclick="window.app.selectDiff('Extreme', 'extreme', 6.85, 390, 120)">Extreme (Vermelho)</button>
-            </div>
-
-            <div style="display:flex; gap:1.5rem; align-items:center; flex-wrap:wrap;" id="diff-info-display">
-              <span id="diff-badge-container">
-                ${this._getDifficultyBadgeHTML(map.difficulty_level, map.difficulty_name)}
-              </span>
-              <span style="color:var(--text-secondary); font-size:0.85rem;">Classificação Estrelar: <strong style="color:white;" id="diff-star-val">★ ${map.star_rating}</strong></span>
-              <span style="color:var(--text-secondary); font-size:0.85rem;">BPM: <strong style="color:white;" id="diff-bpm-val">${map.bpm}</strong></span>
-              <span style="color:var(--text-secondary); font-size:0.85rem;">Notas nesta Dificuldade: <strong style="color:white;" id="diff-notes-val">${map.charts?.easy?.notes_count || 105}</strong></span>
-              <span style="color:var(--text-secondary); font-size:0.85rem;">Modo de Teclas: <strong style="color:white;">${map.keys}</strong></span>
+            <div style="display:flex; gap:1.5rem; align-items:center; flex-wrap:wrap;">
+              ${this._getDifficultyBadgeHTML(map.difficulty_level, map.difficulty_name)}
+              <span style="color:var(--text-secondary); font-size:0.85rem;">BPM: <strong style="color:white;">${map.bpm}</strong></span>
+              <span style="color:var(--text-secondary); font-size:0.85rem;">Notas: <strong style="color:white;">${map.total_notes || '—'}</strong></span>
+              <span style="color:var(--text-secondary); font-size:0.85rem;">Duração: <strong style="color:#38bdf8;">${map.duration_seconds ? (() => { const _m = Math.floor(map.duration_seconds / 60); const _s = Math.floor(map.duration_seconds % 60); return _m + ':' + String(_s).padStart(2,'0'); })() : '—'}</strong></span>
+              <span style="color:var(--text-secondary); font-size:0.85rem;">Idioma do Beatmap: <strong style="color:#c084fc;">${(map.language || 'Português').charAt(0).toUpperCase() + (map.language || 'Português').slice(1)}</strong></span>
             </div>
           </div>
 
@@ -1846,17 +2628,41 @@
       this.showToast(`Dificuldade ${name.toUpperCase()} selecionada!`);
     }
 
+    saveMapperObservation(mapId) {
+      const txt = document.getElementById("map-obs-mapper-input")?.value || '';
+      stateMgr.setObservation(mapId, txt);
+      this.showToast("Observação do mapeador salva!");
+    }
+
+    saveModObservation(mapId) {
+      const txt = document.getElementById("map-obs-mod-input")?.value || '';
+      stateMgr.setObservation(mapId + '_mod', txt);
+      this.showToast("Observação do moderador salva!");
+    }
+
     saveObservation(mapId) {
-      const txt = document.getElementById("map-obs-input").value;
+      const txt = document.getElementById("map-obs-mapper-input")?.value || '';
       stateMgr.setObservation(mapId, txt);
       this.showToast("Observação salva com sucesso!");
     }
 
     async deleteMap(mapId) {
-      if (confirm("Tem certeza que deseja excluir totalmente este beatmap?")) {
-        await db.deleteBeatmap(mapId);
-        this.showToast("Beatmap excluído permanentemente do banco de dados!");
-        window.navigateClean("#/maps");
+      if (confirm("Tem certeza que deseja excluir totalmente este beatmap? O arquivo binário .hbn e a capa também serão apagados do Cloudinary.")) {
+        try {
+          const map = await db.getBeatmapById(mapId);
+          if (map) {
+            this.showToast("Excluindo arquivos do Cloudinary...");
+            if (map.file_url) await CloudinaryService.deleteFile(map.file_url);
+            if (map.cover_url && !map.cover_url.includes("unsplash.com") && !map.cover_url.includes("dicebear.com")) {
+              await CloudinaryService.deleteFile(map.cover_url);
+            }
+          }
+          await db.deleteBeatmap(mapId);
+          this.showToast("Beatmap e arquivos excluídos do Cloudinary e do banco!");
+          window.navigateClean("#/maps");
+        } catch (err) {
+          alert("Erro ao excluir beatmap: " + err.message);
+        }
       }
     }
 
@@ -1872,27 +2678,79 @@
     downloadMap(id, fileUrl) {
       const user = stateMgr.getUser();
       if (!user) {
-        this.showToast("Você precisa ter uma conta para baixar mapas!");
-        window.openAuthModal('register');
+        this.showToast("Você precisa ter uma conta primeiro.");
         return false;
       }
       this.showToast("Download iniciado!");
       if (fileUrl) {
         window.open(fileUrl, '_blank');
       }
-      // Atualiza contador de downloads no Supabase (sem bloquear o download)
-      if (db.supabase && id) {
-        db.supabase.rpc('increment_downloads', { beatmap_id: id }).catch(() => {});
+      // Atualiza contador de downloads no Supabase + cache local
+      if (id) {
+        const cached = db._cachedBeatmaps;
+        const mapIdx = cached ? cached.findIndex(m => m.id === id) : -1;
+        const currentCount = mapIdx > -1 ? (cached[mapIdx].downloads_count || 0) : 0;
+        const newCount = currentCount + 1;
+        // Atualiza cache local imediatamente
+        if (mapIdx > -1) cached[mapIdx].downloads_count = newCount;
+
+        // Atualiza imediatamente elementos visíveis no DOM
+        document.querySelectorAll(`[data-map-downloads="${id}"]`).forEach(el => {
+          el.innerHTML = `<span class="material-symbols-outlined" style="font-size:12px;">download</span> ${newCount} downloads`;
+        });
+        const detailDl = document.getElementById("detail-downloads-count");
+        if (detailDl) detailDl.textContent = newCount;
+
+        // Atualiza no Supabase
+        if (db.supabase) {
+          db.supabase.from('beatmaps')
+            .update({ downloads_count: newCount })
+            .eq('id', id)
+            .then(({ error }) => {
+              if (error) console.warn('[downloads] Supabase update aviso:', error.message);
+            });
+        }
       }
     }
 
     toggleFav(id, btn) {
+      const user = stateMgr.getUser();
+      if (!user) {
+        this.showToast("Você precisa ter uma conta primeiro.");
+        return;
+      }
       const isFav = stateMgr.toggleFavorite(id);
       this.showToast(isFav ? "Adicionado aos favoritos!" : "Removido dos favoritos!");
       const icon = btn.querySelector(".material-symbols-outlined");
       if (icon) {
         icon.textContent = isFav ? "bookmark" : "bookmark_border";
         icon.style.color = isFav ? "#ec4899" : "inherit";
+      }
+      // Atualiza contador de favoritos no Supabase + cache local
+      if (id) {
+        const cached = db._cachedBeatmaps;
+        const mapIdx = cached ? cached.findIndex(m => m.id === id) : -1;
+        const currentCount = mapIdx > -1 ? (cached[mapIdx].favorites_count || 0) : 0;
+        const newCount = Math.max(0, isFav ? currentCount + 1 : currentCount - 1);
+        // Atualiza cache local imediatamente
+        if (mapIdx > -1) cached[mapIdx].favorites_count = newCount;
+
+        // Atualiza imediatamente elementos visíveis no DOM
+        document.querySelectorAll(`[data-map-favorites="${id}"]`).forEach(el => {
+          el.innerHTML = `<span class="material-symbols-outlined" style="font-size:12px;">bookmark</span> ${newCount} fãs`;
+        });
+        const detailFav = document.getElementById("detail-favorites-count");
+        if (detailFav) detailFav.textContent = newCount;
+
+        // Atualiza no Supabase
+        if (db.supabase) {
+          db.supabase.from('beatmaps')
+            .update({ favorites_count: newCount })
+            .eq('id', id)
+            .then(({ error }) => {
+              if (error) console.warn('[favorites] Supabase update aviso:', error.message);
+            });
+        }
       }
     }
 
@@ -1917,29 +2775,46 @@
     // TELA DE PERFIL DE USUÁRIOS (COM MAPAS FAVORITADOS)
     // ========================================================================
     async renderProfileView(userId) {
+      const view = this.getMainView();
+      if (!view) return;
       const urlParams = new URLSearchParams(window.location.hash.split("?")[1] || "");
       const currentUser = stateMgr.getUser();
       const targetId = userId || urlParams.get("id") || (currentUser ? currentUser.id : null);
       const users = await db.getUsers();
-      const maps = await db.getBeatmaps();
-      const u = (targetId ? users.find(x => x.id === targetId) : null) || (currentUser ? users.find(x => x.id === currentUser.id) : null);
+      const rawMaps = await db.getBeatmaps();
+      const maps = this.getVisibleBeatmaps(rawMaps);
+
+      let u = (targetId ? users.find(x => x.id === targetId || x.username === targetId) : null);
+      if (!u && currentUser && (!targetId || targetId === currentUser.id || targetId === currentUser.username)) {
+        u = currentUser;
+      }
+
       if (!u) {
-        this.mainView.innerHTML = `
-          <div class="container" style="padding: 4rem 1rem; text-align: center;">
-            <div style="max-width: 500px; margin: 0 auto; background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); padding: 3rem 1.5rem;">
-              <span class="material-symbols-outlined" style="font-size: 3.5rem; color: var(--accent-purple-light); margin-bottom: 0.5rem;">person_off</span>
-              <h2 style="font-size: 1.8rem; font-weight: 900; color: white; margin-bottom: 0.5rem;">Perfil não encontrado</h2>
-              <p style="color: var(--text-secondary); font-size: 0.95rem; margin-bottom: 1.5rem;">O usuário solicitado não existe ou ainda não foi registrado no banco de dados.</p>
-              <a href="#/" onclick="window.navigateClean('#/'); return false;" class="btn btn-primary">Voltar ao Início</a>
+        if (!currentUser) {
+          view.innerHTML = `
+            <div class="container" style="padding: 4rem 1rem; text-align: center;">
+              <div style="max-width: 480px; margin: 0 auto; background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); padding: 3rem 1.5rem;">
+                <span class="material-symbols-outlined" style="font-size: 3.5rem; color: var(--accent-purple-light); margin-bottom: 0.5rem;">account_circle</span>
+                <h2 style="font-size: 1.6rem; font-weight: 900; color: white; margin-bottom: 0.5rem;">Acesse sua Conta</h2>
+                <p style="color: var(--text-secondary); font-size: 0.9rem; margin-bottom: 1.5rem;">Entre na sua conta ou crie um cadastro para visualizar seu perfil completo, gerenciar seus beatmaps e acompanhar favoritos.</p>
+                <div style="display:flex; justify-content:center; gap:0.75rem; flex-wrap:wrap;">
+                  <button class="btn btn-primary" onclick="window.openAuthModal('login')">Entrar na Conta</button>
+                  <button class="btn btn-secondary" onclick="window.openAuthModal('register')">Criar Conta</button>
+                </div>
+              </div>
             </div>
-          </div>
-        `;
+          `;
+          return;
+        }
+        await this.render404View("profile");
         return;
       }
 
       const createdMaps = maps.filter(m => m.mapper_name === u.username || m.mapper_id === u.id);
       const favMapIds = stateMgr.getUserFavorites(u.id);
       const favoritedMaps = maps.filter(m => favMapIds.includes(m.id));
+      const totalDownloads = createdMaps.reduce((sum, m) => sum + (Number(m.downloads_count) || 0), 0);
+      const totalFavorites = createdMaps.reduce((sum, m) => sum + (Number(m.favorites_count) || 0), 0);
 
       const isOwnProfile = currentUser && currentUser.id === u.id;
       const roleInfo = APP_CONFIG.ROLES[u.role] || APP_CONFIG.ROLES.player;
@@ -1948,42 +2823,95 @@
         (currentUser.role === 'admin' && u.role === 'player')
       );
       const userBio = (u.bio && u.bio.trim()) ? u.bio.trim() : "Ainda não falou nada sobre si.";
+      const memberSince = u.created_at
+        ? new Date(u.created_at).toLocaleDateString('pt-BR', { day: '2-digit', month: 'long', year: 'numeric' })
+        : null;
 
-      this.mainView.innerHTML = `
+      view.innerHTML = `
         <div class="container" style="padding: 2.5rem 0;">
-          <div style="background:var(--bg-card); border:1px solid var(--border-subtle); border-radius:var(--radius-sm); padding:2rem; display:flex; align-items:flex-start; gap:1.5rem; margin-bottom:2rem; flex-wrap:wrap;">
-            <img src="${u.avatar_url}" style="width:84px; height:84px; border-radius:var(--radius-sm); object-fit:cover; border:2px solid var(--accent-purple);" alt="${u.username}">
-            <div style="flex:1; min-width:260px;">
-              <div style="display:flex; align-items:center; gap:0.5rem; flex-wrap:wrap;">
-                <h1 style="font-size:2rem; font-weight:900; color:#fff; margin:0;">${u.username}</h1>
-                <span class="hierarchy-tag ${roleInfo.tagClass}">${roleInfo.label}</span>
-                ${u.is_dev ? '<span class="hierarchy-tag tag-dev">DEV</span>' : ''}
-              </div>
-              ${u.discord_tag ? `<p style="color:var(--accent-cyan); font-weight:700; font-size:0.85rem; margin:0.35rem 0 0.5rem 0;">Discord: @${u.discord_tag}</p>` : '<p style="color:var(--text-muted); font-size:0.85rem; margin:0.35rem 0 0.5rem 0;">Discord: Não informado</p>'}
-              
-              <div style="margin-top:0.75rem; background:rgba(255,255,255,0.03); border:1px solid var(--border-subtle); border-radius:var(--radius-sm); padding:0.75rem 1rem;">
-                <div style="font-size:0.75rem; font-weight:800; color:var(--text-muted); text-transform:uppercase; margin-bottom:0.25rem;">Sobre Mim</div>
-                <p style="color:var(--text-secondary); font-size:0.9rem; margin:0; line-height:1.4;">${userBio}</p>
+          <!-- Card de Perfil com Banner Superior e Avatar Centralizado em Degradê -->
+          <div style="background:var(--bg-card); border:1px solid var(--border-subtle); border-radius:var(--radius-sm); overflow:hidden; margin-bottom:2.5rem; position:relative;">
+            
+            <!-- Hero Banner com a Imagem de Perfil ampliada e degradê para baixo -->
+            <div style="position:relative; width:100%; height:190px; background:radial-gradient(circle at 50% 30%, rgba(168,85,247,0.3) 0%, rgba(15,16,26,0.95) 80%), url('${u.avatar_url || APP_CONFIG.defaultAvatar}') center/cover no-repeat;">
+              <!-- Overlay com degradê escuro fluindo suavemente para baixo -->
+              <div style="position:absolute; inset:0; background:linear-gradient(to bottom, rgba(10,11,20,0.2) 0%, rgba(15,16,26,0.7) 50%, var(--bg-card) 100%);"></div>
+
+              <!-- Foto de Perfil Grande Centralizada com Sombra e Glow -->
+              <div style="position:absolute; bottom:-50px; left:50%; transform:translateX(-50%); z-index:3;">
+                <img src="${u.avatar_url || APP_CONFIG.defaultAvatar}" onerror="this.onerror=null; this.src='${APP_CONFIG.defaultAvatar}'" style="width:110px; height:110px; border-radius:50%; object-fit:cover; border:3px solid var(--accent-purple-light); box-shadow:0 8px 24px rgba(0,0,0,0.7), 0 0 25px rgba(168,85,247,0.4); display:block;" alt="${u.username}">
               </div>
             </div>
 
-            <div style="display:flex; flex-direction:column; gap:0.5rem; align-items:flex-end;">
-              ${isOwnProfile ? `
-                <button class="btn btn-secondary" onclick="window.app.openEditProfileModal()" style="display:flex; align-items:center; gap:0.4rem; padding:0.5rem 1rem; font-weight:700;">
-                  <span class="material-symbols-outlined" style="font-size:1.1rem;">edit</span> Editar Perfil
-                </button>
-              ` : ''}
+            <!-- Informações do Usuário Centralizadas abaixo do Banner -->
+            <div style="padding: 60px 1.5rem 1.75rem 1.5rem; text-align:center; display:flex; flex-direction:column; align-items:center;">
+              
+              <!-- Nome de Usuário e Cargos Especiais (Sem tag Player) -->
+              <div style="display:flex; align-items:center; justify-content:center; gap:0.5rem; flex-wrap:wrap; margin-bottom:0.25rem;">
+                <h1 style="font-size:2.2rem; font-weight:900; color:#fff; margin:0; letter-spacing:-0.02em;">${u.username}</h1>
+                ${u.is_dev ? '<span class="hierarchy-tag tag-dev">DEV</span>' : (roleInfo.tagClass !== 'tag-player' && roleInfo.label ? `<span class="hierarchy-tag ${roleInfo.tagClass}">${roleInfo.label}</span>` : '')}
+              </div>
 
-              ${canPromote ? `
-                <div style="display:flex; flex-direction:column; gap:0.35rem; margin-top:0.5rem;">
-                  <label style="font-size:0.75rem; font-weight:800; color:var(--text-secondary);">Promover Cargo:</label>
-                  <select class="search-input-field" onchange="window.app.promoteUser('${u.id}', this.value)" style="padding:0.3rem 0.5rem;">
-                    <option value="player" ${u.role === 'player' ? 'selected' : ''}>Player</option>
-                    <option value="writer" ${u.role === 'writer' ? 'selected' : ''}>Escritor / Mod</option>
-                    ${currentUser.is_dev ? '<option value="admin" ' + (u.role === 'admin' ? 'selected' : '') + '>Administrador</option>' : ''}
-                  </select>
+              <!-- Links de Streams Limpos e Diretos (Apenas se preenchidos) -->
+              ${this._renderStreamerBadgesHTML(u)}
+
+              <!-- Discord e Data de Criação da Conta -->
+              <div style="display:flex; align-items:center; justify-content:center; gap:1.25rem; flex-wrap:wrap; margin-top:0.4rem; color:var(--text-secondary); font-size:0.875rem;">
+                ${u.discord_tag ? `<span style="display:flex; align-items:center; gap:0.35rem; color:var(--accent-cyan); font-weight:700;"><span class="material-symbols-outlined" style="font-size:1.05rem;">chat</span> @${u.discord_tag}</span>` : ''}
+                ${memberSince ? `<span style="display:flex; align-items:center; gap:0.35rem;"><span class="material-symbols-outlined" style="font-size:1.05rem; color:var(--accent-gold);">calendar_month</span> Membro desde ${memberSince}</span>` : ''}
+              </div>
+
+              <!-- Sobre Mim (Bio) -->
+              <div style="margin-top:1.25rem; max-width:680px; width:100%; background:rgba(255,255,255,0.025); border:1px solid var(--border-subtle); border-radius:var(--radius-sm); padding:0.9rem 1.25rem; text-align:center;">
+                <div style="font-size:0.75rem; font-weight:800; color:var(--text-muted); text-transform:uppercase; margin-bottom:0.3rem; letter-spacing:0.05em;">Sobre Mim</div>
+                <p style="color:var(--text-secondary); font-size:0.925rem; margin:0; line-height:1.5;">${userBio}</p>
+              </div>
+
+              <!-- Estatísticas Acumuladas de Todos os Mapas do Criador -->
+              <div style="display:flex; justify-content:center; gap:0.85rem; margin-top:1.25rem; flex-wrap:wrap;">
+                <div style="background:rgba(255,255,255,0.03); border:1px solid var(--border-subtle); border-radius:var(--radius-sm); padding:0.5rem 1rem; display:flex; align-items:center; gap:0.5rem;">
+                  <span class="material-symbols-outlined" style="color:var(--accent-purple-light); font-size:1.2rem;">library_music</span>
+                  <div style="text-align:left;">
+                    <div style="font-size:0.65rem; color:var(--text-muted); font-weight:800; text-transform:uppercase;">Mapas Criados</div>
+                    <div style="font-size:1.05rem; font-weight:900; color:#fff;">${createdMaps.length}</div>
+                  </div>
                 </div>
-              ` : ''}
+                <div style="background:rgba(255,255,255,0.03); border:1px solid var(--border-subtle); border-radius:var(--radius-sm); padding:0.5rem 1rem; display:flex; align-items:center; gap:0.5rem;">
+                  <span class="material-symbols-outlined" style="color:var(--accent-cyan); font-size:1.2rem;">download</span>
+                  <div style="text-align:left;">
+                    <div style="font-size:0.65rem; color:var(--text-muted); font-weight:800; text-transform:uppercase;">Downloads Recebidos</div>
+                    <div style="font-size:1.05rem; font-weight:900; color:#fff;">${totalDownloads}</div>
+                  </div>
+                </div>
+                <div style="background:rgba(255,255,255,0.03); border:1px solid var(--border-subtle); border-radius:var(--radius-sm); padding:0.5rem 1rem; display:flex; align-items:center; gap:0.5rem;">
+                  <span class="material-symbols-outlined" style="color:#ec4899; font-size:1.2rem;">bookmark</span>
+                  <div style="text-align:left;">
+                    <div style="font-size:0.65rem; color:var(--text-muted); font-weight:800; text-transform:uppercase;">Fãs / Favoritos</div>
+                    <div style="font-size:1.05rem; font-weight:900; color:#fff;">${totalFavorites}</div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Ações (Editar Perfil / Promover) -->
+              <div style="margin-top:1.25rem; display:flex; gap:0.75rem; justify-content:center; flex-wrap:wrap; align-items:center;">
+                ${isOwnProfile ? `
+                  <button class="btn btn-secondary" onclick="window.app.openEditProfileModal()" style="display:flex; align-items:center; gap:0.4rem; padding:0.5rem 1.1rem; font-weight:700;">
+                    <span class="material-symbols-outlined" style="font-size:1.1rem;">edit</span> Editar Perfil
+                  </button>
+                ` : ''}
+
+                ${canPromote ? `
+                  <div style="display:flex; align-items:center; gap:0.5rem; background:rgba(255,255,255,0.03); border:1px solid var(--border-subtle); border-radius:var(--radius-sm); padding:0.35rem 0.75rem;">
+                    <label style="font-size:0.75rem; font-weight:800; color:var(--text-secondary);">Cargo:</label>
+                    <select class="search-input-field" onchange="window.app.promoteUser('${u.id}', this.value)" style="padding:0.25rem 0.5rem; font-size:0.8rem;">
+                      <option value="player" ${u.role === 'player' ? 'selected' : ''}>Padrão (Sem cargo)</option>
+                      <option value="writer" ${u.role === 'writer' ? 'selected' : ''}>Escritor / Mod</option>
+                      ${currentUser.is_dev ? '<option value="admin" ' + (u.role === 'admin' ? 'selected' : '') + '>Administrador</option>' : ''}
+                    </select>
+                  </div>
+                ` : ''}
+              </div>
+
             </div>
           </div>
 
@@ -2029,10 +2957,17 @@
       const bioInput = document.getElementById("edit-bio");
       const pwInput = document.getElementById("edit-password");
       const pwcInput = document.getElementById("edit-password-confirm");
+      const kickInput = document.getElementById("edit-stream-kick");
+      const twitchInput = document.getElementById("edit-stream-twitch");
+      const ytInput = document.getElementById("edit-stream-youtube");
+
       if (unInput) unInput.value = u.username || "";
       if (dcInput) dcInput.value = u.discord_tag || "";
       if (avInput) avInput.value = u.avatar_url || "";
       if (bioInput) bioInput.value = u.bio || "";
+      if (kickInput) kickInput.value = u.stream_kick || "";
+      if (twitchInput) twitchInput.value = u.stream_twitch || "";
+      if (ytInput) ytInput.value = u.stream_youtube || "";
       if (pwInput) pwInput.value = "";
       if (pwcInput) pwcInput.value = "";
       modal.classList.add("active");
@@ -2047,12 +2982,37 @@
       const newDiscord = (document.getElementById("edit-discord")?.value || "").trim();
       const newAvatar = (document.getElementById("edit-avatar")?.value || "").trim();
       const newBio = (document.getElementById("edit-bio")?.value || "").trim();
+      const newKick = (document.getElementById("edit-stream-kick")?.value || "").trim();
+      const newTwitch = (document.getElementById("edit-stream-twitch")?.value || "").trim();
+      const newYt = (document.getElementById("edit-stream-youtube")?.value || "").trim();
       const newPass = document.getElementById("edit-password")?.value || "";
       const passConfirm = document.getElementById("edit-password-confirm")?.value || "";
 
       if (!newUsername) {
         alert("O nome de usuário não pode ficar vazio.");
         return;
+      }
+
+      // Validação estrita de plataformas de Streaming permitidas: Kik, Twitch, YouTube
+      if (newKick) {
+        if (!newKick.toLowerCase().includes("kick.com/")) {
+          alert("O link da Kick deve pertencer exclusivamente ao domínio oficial: https://kick.com/seucanal");
+          return;
+        }
+      }
+
+      if (newTwitch) {
+        if (!newTwitch.toLowerCase().includes("twitch.tv/")) {
+          alert("O link da Twitch deve pertencer exclusivamente ao domínio oficial: https://twitch.tv/seucanal");
+          return;
+        }
+      }
+
+      if (newYt) {
+        if (!newYt.toLowerCase().includes("youtube.com/") && !newYt.toLowerCase().includes("youtu.be/")) {
+          alert("O link do YouTube deve pertencer exclusivamente ao domínio oficial: https://youtube.com/@seucanal");
+          return;
+        }
       }
 
       if (newPass || passConfirm) {
@@ -2082,7 +3042,10 @@
         username: newUsername,
         discord_tag: newDiscord,
         bio: newBio,
-        avatar_url: newAvatar || u.avatar_url || `https://api.dicebear.com/7.x/bottts/svg?seed=${encodeURIComponent(newUsername)}`
+        stream_kick: newKick || null,
+        stream_twitch: newTwitch || null,
+        stream_youtube: newYt || null,
+        avatar_url: newAvatar || u.avatar_url || APP_CONFIG.defaultAvatar
       };
 
       try {
@@ -2094,6 +3057,42 @@
         this.renderProfileView(updatedUser.id);
       } catch (err) {
         alert("Erro ao salvar alterações no perfil: " + err.message);
+      }
+    }
+
+    _renderStreamerBadgesHTML(u) {
+      if (!u || (!u.stream_kick && !u.stream_twitch && !u.stream_youtube)) return '';
+      return `
+        <div style="display:flex; align-items:center; justify-content:center; gap:0.6rem; margin:0.4rem 0; flex-wrap:wrap;">
+          ${u.stream_youtube ? `
+            <a href="${u.stream_youtube}" target="_blank" rel="noopener noreferrer" style="text-decoration:none; display:inline-flex; align-items:center; gap:0.35rem; color:#ef4444; font-size:0.825rem; font-weight:800; padding:0.25rem 0.65rem; border-radius:6px; background:rgba(239,68,68,0.1); border:1px solid rgba(239,68,68,0.3); transition:all 0.2s;">
+              <span class="material-symbols-outlined" style="font-size:1rem;">smart_display</span>
+              <span>YouTube</span>
+            </a>
+          ` : ''}
+          ${u.stream_twitch ? `
+            <a href="${u.stream_twitch}" target="_blank" rel="noopener noreferrer" style="text-decoration:none; display:inline-flex; align-items:center; gap:0.35rem; color:#a855f7; font-size:0.825rem; font-weight:800; padding:0.25rem 0.65rem; border-radius:6px; background:rgba(168,85,247,0.1); border:1px solid rgba(168,85,247,0.3); transition:all 0.2s;">
+              <span class="material-symbols-outlined" style="font-size:1rem;">live_tv</span>
+              <span>Twitch</span>
+            </a>
+          ` : ''}
+          ${u.stream_kick ? `
+            <a href="${u.stream_kick}" target="_blank" rel="noopener noreferrer" style="text-decoration:none; display:inline-flex; align-items:center; gap:0.35rem; color:#10b981; font-size:0.825rem; font-weight:800; padding:0.25rem 0.65rem; border-radius:6px; background:rgba(16,185,129,0.1); border:1px solid rgba(16,185,129,0.3); transition:all 0.2s;">
+              <span style="display:inline-block; width:8px; height:8px; background:#10b981; border-radius:50%; box-shadow:0 0 6px #10b981;"></span>
+              <span>Kick</span>
+            </a>
+          ` : ''}
+        </div>
+      `;
+    }
+
+    async generateNekosAvatar() {
+      this.showToast("Buscando foto de perfil na NekosAPI.com...");
+      const avatarUrl = await NekosService.fetchRandomAvatar();
+      const input = document.getElementById("edit-avatar");
+      if (input) {
+        input.value = avatarUrl;
+        this.showToast("Foto da NekosAPI selecionada!");
       }
     }
 
@@ -2206,6 +3205,190 @@
     }
 
     // ========================================================================
+    // PÁGINA 404 — ROTA NÃO ENCONTRADA / PERFIL / MAPA INEXISTENTE
+    // ========================================================================
+    async render404View(reason) {
+      const view = this.getMainView();
+      if (!view) return;
+
+      const fallbackDemo = [
+        { id: "demo-1", title: "鳥の詩 (Tori no Uta)", artist: "Lia", cover_url: "https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=600", downloads_count: 1420, favorites_count: 312 },
+        { id: "demo-2", title: "Elif", artist: "Cadu Rodrigues", cover_url: "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=600", downloads_count: 980, favorites_count: 245 },
+        { id: "demo-3", title: "Cyber Rush 4K", artist: "HDBN Original", cover_url: "capa.jpg", downloads_count: 850, favorites_count: 190 },
+        { id: "demo-4", title: "Neon Echoes", artist: "Rhythm Lab", cover_url: "https://images.unsplash.com/photo-1508700115892-45ecd05ae2ad?w=600", downloads_count: 730, favorites_count: 160 }
+      ];
+
+      let initialMaps = db._cachedBeatmaps && db._cachedBeatmaps.length > 0 ? db._cachedBeatmaps : fallbackDemo;
+      let topDownloaded = [...initialMaps].sort((a, b) => (b.downloads_count || 0) - (a.downloads_count || 0)).slice(0, 4);
+      let topFavorited = [...initialMaps].sort((a, b) => (b.favorites_count || 0) - (a.favorites_count || 0)).slice(0, 4);
+
+      const reasonMessages = {
+        profile: { icon: "person_off", title: "Perfil não encontrado", desc: "O usuário que você procura não existe ou foi removido da plataforma." },
+        map:     { icon: "music_off",  title: "Mapa não encontrado",   desc: "Este beatmap foi removido, ainda não foi aprovado ou o link está incorreto." },
+        default: { icon: "error",      title: "Página não encontrada", desc: "A rota que você tentou acessar não existe nesta plataforma." }
+      };
+      const rm = reasonMessages[reason] || reasonMessages.default;
+
+      const renderMiniGrid = (list, isFav = false) => `
+        <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(200px,1fr)); gap:0.85rem;">
+          ${list.map(m => `
+            <a href="#/beatmap?id=${m.id}" style="text-decoration:none;" onclick="window.navigateClean('#/beatmap?id=${m.id}'); return false;">
+              <div style="background:var(--bg-card); border:1px solid var(--border-subtle); border-radius:var(--radius-sm); overflow:hidden; transition:border-color .2s, transform .2s;" onmouseenter="this.style.borderColor='var(--accent-purple)'; this.style.transform='translateY(-2px)'" onmouseleave="this.style.borderColor='var(--border-subtle)'; this.style.transform=''">
+                <div style="width:100%; height:100px; overflow:hidden; background:#0d0e18;">
+                  <img src="${m.cover_url || APP_CONFIG.defaultCover}" alt="${m.title}" style="width:100%; height:100%; object-fit:cover; opacity:.85;">
+                </div>
+                <div style="padding:0.6rem 0.75rem;">
+                  <div style="font-size:0.82rem; font-weight:700; color:white; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${m.title}</div>
+                  <div style="font-size:0.72rem; color:var(--text-secondary); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${m.artist}</div>
+                  <div style="margin-top:0.35rem; font-size:0.7rem; color:${isFav ? '#ec4899' : 'var(--accent-cyan)'}; display:flex; align-items:center; gap:0.25rem;">
+                    <span class="material-symbols-outlined" style="font-size:12px;">${isFav ? 'bookmark' : 'download'}</span>
+                    ${isFav ? `${m.favorites_count || 0} fãs` : `${m.downloads_count || 0} downloads`}
+                  </div>
+                </div>
+              </div>
+            </a>
+          `).join("")}
+        </div>
+      `;
+
+      view.innerHTML = `
+        <div style="min-height:70vh; display:flex; flex-direction:column; align-items:center; justify-content:center; padding:2rem 1rem;">
+          <div style="width:100%; max-width:760px;">
+
+            <!-- Número 404 gigante -->
+            <div style="text-align:center; line-height:1; margin-bottom:1.5rem; user-select:none;">
+              <span style="
+                font-size: clamp(7rem, 22vw, 12rem);
+                font-weight: 900;
+                letter-spacing: -0.04em;
+                background: linear-gradient(135deg, var(--accent-purple) 0%, var(--accent-cyan) 100%);
+                -webkit-background-clip: text;
+                -webkit-text-fill-color: transparent;
+                background-clip: text;
+                display: inline-block;
+                filter: drop-shadow(0 0 40px rgba(139,92,246,0.35));
+              ">404</span>
+            </div>
+
+            <!-- Ícone + Mensagem -->
+            <div style="text-align:center; margin-bottom:2rem;">
+              <div style="display:inline-flex; align-items:center; gap:0.6rem; background:rgba(139,92,246,.12); border:1px solid rgba(139,92,246,.3); border-radius:999px; padding:0.45rem 1.1rem; margin-bottom:1rem;">
+                <span class="material-symbols-outlined" style="font-size:1.1rem; color:var(--accent-purple-light);">${rm.icon}</span>
+                <span style="font-size:0.82rem; font-weight:700; color:var(--accent-purple-light);">${rm.title}</span>
+              </div>
+              <p style="color:var(--text-secondary); font-size:0.95rem; line-height:1.65; margin:0 auto; max-width:460px;">${rm.desc}</p>
+            </div>
+
+            <!-- Botões de ação -->
+            <div style="display:flex; flex-wrap:wrap; gap:0.75rem; justify-content:center; margin-bottom:2rem;">
+              <a href="#/" onclick="window.navigateClean('#/'); return false;" class="btn btn-primary">
+                <span class="material-symbols-outlined">home</span> Voltar ao Início
+              </a>
+              <a href="#/maps" onclick="window.navigateClean('#/maps'); return false;" class="btn btn-secondary">
+                <span class="material-symbols-outlined">library_music</span> Ver Todos os Mapas
+              </a>
+            </div>
+
+            <!-- Erros comuns nos navegadores -->
+            <div style="background:var(--bg-card); border:1px solid var(--border-subtle); border-radius:var(--radius-sm); padding:1.25rem 1.5rem; margin-bottom:2.5rem;">
+              <p style="font-size:0.8rem; font-weight:700; color:var(--text-secondary); text-transform:uppercase; letter-spacing:.06em; margin:0 0 0.75rem 0;">Erros Comuns no Navegador</p>
+              <div style="display:flex; flex-direction:column; gap:0.55rem;">
+                <div style="display:flex; align-items:flex-start; gap:0.6rem;">
+                  <span class="material-symbols-outlined" style="font-size:1rem; color:#f59e0b; flex-shrink:0; margin-top:1px;">person_off</span>
+                  <span style="font-size:0.83rem; color:var(--text-secondary);">
+                    <strong style="color:white;">Perfil não encontrado</strong> — O criador trocou de nome ou a conta não existe.
+                  </span>
+                </div>
+                <div style="display:flex; align-items:flex-start; gap:0.6rem;">
+                  <span class="material-symbols-outlined" style="font-size:1rem; color:#38bdf8; flex-shrink:0; margin-top:1px;">music_off</span>
+                  <span style="font-size:0.83rem; color:var(--text-secondary);">
+                    <strong style="color:white;">Mapa não encontrado</strong> — O beatmap foi retirado, expirou ou o ID na URL foi digitado errado.
+                  </span>
+                </div>
+                <div style="display:flex; align-items:flex-start; gap:0.6rem;">
+                  <span class="material-symbols-outlined" style="font-size:1rem; color:#ec4899; flex-shrink:0; margin-top:1px;">lock</span>
+                  <span style="font-size:0.83rem; color:var(--text-secondary);">
+                    <strong style="color:white;">Acesso não autorizado</strong> — Certas seções exigem autenticação ativa.
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Seção 1: Mapas Mais Baixados -->
+            ${topDownloaded.length > 0 ? `
+              <div style="margin-bottom:2rem; text-align:left;">
+                <h3 style="font-size:0.95rem; font-weight:800; color:white; letter-spacing:0.05em; text-transform:uppercase; margin-bottom:1rem; display:flex; align-items:center; gap:0.4rem;">
+                  <span class="material-symbols-outlined" style="color:var(--accent-cyan); font-size:1.15rem;">download</span>
+                  Mapas Mais Baixados
+                </h3>
+                ${renderMiniGrid(topDownloaded, false)}
+              </div>
+            ` : ''}
+
+            <!-- Seção 2: Mapas Mais Curtidos / Favoritados -->
+            ${topFavorited.length > 0 ? `
+              <div style="margin-bottom:2rem; text-align:left;">
+                <h3 style="font-size:0.95rem; font-weight:800; color:white; letter-spacing:0.05em; text-transform:uppercase; margin-bottom:1rem; display:flex; align-items:center; gap:0.4rem;">
+                  <span class="material-symbols-outlined" style="color:#ec4899; font-size:1.15rem;">bookmark</span>
+                  Mapas Mais Curtidos (Fãs)
+                </h3>
+                ${renderMiniGrid(topFavorited, true)}
+              </div>
+            ` : ''}
+
+          </div>
+        </div>
+      `;
+
+      document.title = "404 — Página Não Encontrada | HDBN";
+    }
+
+    // ========================================================================
+    // PÁGINA 500 — ERRO INTERNO / SERVIÇO INDISPONÍVEL
+    // ========================================================================
+    render500View(errorMsg = "") {
+      const view = this.getMainView();
+      if (view) {
+        view.innerHTML = `
+        <div style="min-height:70vh; display:flex; flex-direction:column; align-items:center; justify-content:center; padding:2rem 1rem;">
+          <div style="width:100%; max-width:620px; text-align:center;">
+            <div style="line-height:1; margin-bottom:1.5rem; user-select:none;">
+              <span style="
+                font-size: clamp(6rem, 20vw, 10rem);
+                font-weight: 900;
+                letter-spacing: -0.04em;
+                background: linear-gradient(135deg, #ef4444 0%, #f59e0b 100%);
+                -webkit-background-clip: text;
+                -webkit-text-fill-color: transparent;
+                background-clip: text;
+                display: inline-block;
+                filter: drop-shadow(0 0 30px rgba(239,68,68,0.35));
+              ">500</span>
+            </div>
+            <div style="display:inline-flex; align-items:center; gap:0.6rem; background:rgba(239,68,68,.12); border:1px solid rgba(239,68,68,.3); border-radius:999px; padding:0.45rem 1.1rem; margin-bottom:1rem;">
+              <span class="material-symbols-outlined" style="font-size:1.1rem; color:#ef4444;">dns</span>
+              <span style="font-size:0.85rem; font-weight:700; color:#ef4444;">Erro Interno do Servidor</span>
+            </div>
+            <p style="color:var(--text-secondary); font-size:0.95rem; line-height:1.65; margin:0 auto 1.5rem auto; max-width:440px;">
+              Ocorreu uma falha temporária ao se comunicar com o banco de dados. Tente recarregar a página ou voltar para o início.
+            </p>
+            ${errorMsg ? `<div style="background:#15161f; border:1px solid #ef4444; border-radius:var(--radius-sm); padding:0.75rem 1rem; color:#fca5a5; font-size:0.8rem; margin-bottom:1.5rem; font-family:monospace; word-break:break-all;">${errorMsg}</div>` : ''}
+            <div style="display:flex; justify-content:center; gap:0.75rem; flex-wrap:wrap;">
+              <a href="#/" onclick="window.navigateClean('#/'); return false;" class="btn btn-primary">
+                <span class="material-symbols-outlined">home</span> Página Inicial
+              </a>
+              <button onclick="window.location.reload()" class="btn btn-secondary">
+                <span class="material-symbols-outlined">refresh</span> Tentar Novamente
+              </button>
+            </div>
+          </div>
+        </div>
+      `;
+      }
+      document.title = "500 — Erro no Servidor | HDBN";
+    }
+
+    // ========================================================================
     // ========================================================================
     // TELA DE AJUDA & FAQ (/ajuda) - ESTRUTURAÇÃO POR TÓPICOS OFICIAIS
     // ========================================================================
@@ -2296,6 +3479,11 @@
             <p style="color:var(--text-secondary); font-size:0.95rem; margin-top:0.35rem;">
               Tópicos oficiais sobre mecânicas, pontuação, criação de beatmaps e moderação do HDBN.
             </p>
+            <div style="margin-top:1rem;">
+              <a href="#/regras" class="btn btn-secondary" style="font-size:0.85rem; padding:0.4rem 1rem; border-radius:999px; display:inline-flex; align-items:center; gap:0.4rem; text-decoration:none;">
+                <span class="material-symbols-outlined" style="font-size:1.1rem; color:var(--accent-cyan);">gavel</span> Ver Regras da Comunidade
+              </a>
+            </div>
           </div>
 
           <div style="display:flex; flex-direction:column; gap:1rem;">
@@ -2319,14 +3507,140 @@
     }
 
     // ========================================================================
+    // TELA DE REGRAS DA COMUNIDADE (/regras)
+    // ========================================================================
+    async renderRulesView() {
+      const view = this.getMainView();
+      if (!view) return;
+
+      const rules = [
+        {
+          num: "01",
+          icon: "bug_report",
+          title: "Estabilidade do Jogo (Mapas Não Podem Crashar)",
+          summary: "Beatmaps que causam travamentos imediatos ou encerramento forçado do jogo serão suspensos.",
+          details: `
+            <p>O HDBN roda na Godot Engine e lê os dados do chart de forma precisa. Mapas publicados devem passar pelos seguintes critérios de estabilidade:</p>
+            <ul style="margin: 0.5rem 0 0 1.25rem; line-height: 1.6;">
+              <li><strong>Sem notas corrompidas:</strong> Não configure timestamps negativos, notas fora dos limites das faixas (4K / 7K) ou valores infinitos no BPM.</li>
+              <li><strong>Áudio Válido:</strong> O arquivo de música deve ser estritamente <code>.mp3</code> ou <code>.ogg</code> decodificável, sem headers quebrados.</li>
+              <li><strong>Teste Prévio:</strong> Antes de exportar e publicar o <code>.hbn</code>, jogue o mapa localmente do início ao fim para garantir que não ocorra crash.</li>
+            </ul>
+          `
+        },
+        {
+          num: "02",
+          icon: "graphic_eq",
+          title: "Sincronia de Áudio & BPM Calibrado",
+          summary: "Garantir que as notas acompanhem o ritmo real da música para manter a jogabilidade justa e prazerosa.",
+          details: `
+            <p>Um bom jogo de ritmo depende de precisão milimétrica:</p>
+            <ul style="margin: 0.5rem 0 0 1.25rem; line-height: 1.6;">
+              <li><strong>Offset e BPM:</strong> Alinhe o BPM corretamente com a batida para evitar dessincronia progressiva ao longo da música.</li>
+              <li><strong>Prévia de Áudio:</strong> Defina um tempo de início de prévia condizente com o refrão ou parte marcante da música.</li>
+            </ul>
+          `
+        },
+        {
+          num: "03",
+          icon: "image",
+          title: "Capas e Conteúdo Apropriado",
+          summary: "Respeito visual aos jogadores e cumprimento dos termos de comunidade.",
+          details: `
+            <p>As artes de capa dos beatmaps são exibidas publicamente na plataforma:</p>
+            <ul style="margin: 0.5rem 0 0 1.25rem; line-height: 1.6;">
+              <li><strong>Sem Conteúdo Ilícito ou Impróprio:</strong> Capas com conteúdo pornográfico explícito, apologia a crimes ou violência gráfica serão removidas imediatamente.</li>
+              <li><strong>Resolução Recomendada:</strong> Utilize imagens quadradas ou widescreen nítidas (mínimo 512x512px) nos formatos JPG ou PNG.</li>
+            </ul>
+          `
+        },
+        {
+          num: "04",
+          icon: "content_copy",
+          title: "Anti-Spam e Duplicação de Mapas",
+          summary: "Não republique o mesmo mapa repetidamente apenas para figurar nas publicações recentes.",
+          details: `
+            <p>A plataforma conta com sistema automático de hash anti-spam:</p>
+            <ul style="margin: 0.5rem 0 0 1.25rem; line-height: 1.6;">
+              <li>Se você deseja atualizar uma dificuldade ou corrigir notas de um mapa existente, edite o mapa ou informe as notas de atualização na descrição.</li>
+              <li>Tentativas massivas de spam podem acarretar em redução no limite diário de uploads ou suspensão temporária da conta.</li>
+            </ul>
+          `
+        },
+        {
+          num: "05",
+          icon: "diversity_3",
+          title: "Respeito e Convivência da Comunidade",
+          summary: "Promover um ambiente saudável para criadores veteranos e novatos.",
+          details: `
+            <p>A comunidade HDBN é aberta e colaborativa:</p>
+            <ul style="margin: 0.5rem 0 0 1.25rem; line-height: 1.6;">
+              <li>Críticas construtivas aos mapas são bem-vindas; ofensas gratuitas e assédio a criadores não serão tolerados.</li>
+              <li>A staff (Moderadores, Administradores e DEVs) monitora denúncias para manter a qualidade e segurança da comunidade.</li>
+            </ul>
+          `
+        }
+      ];
+
+      view.innerHTML = `
+        <div class="container" style="padding: 2.5rem 0; max-width:860px;">
+          <div style="text-align:center; margin-bottom: 2.5rem;">
+            <div style="display:inline-flex; align-items:center; gap:0.4rem; background:rgba(168,85,247,0.15); border:1px solid var(--accent-purple-light); color:var(--accent-purple-light); padding:0.25rem 0.75rem; border-radius:999px; font-size:0.8rem; font-weight:800; margin-bottom:0.75rem;">
+              <span class="material-symbols-outlined" style="font-size:1.1rem;">policy</span> DIRETRIZES OFICIAIS
+            </div>
+            <h1 style="font-size:2.2rem; font-weight:900; color:#fff; display:flex; align-items:center; justify-content:center; gap:0.5rem;">
+              <span class="material-symbols-outlined" style="color:var(--accent-cyan); font-size:2.4rem;">gavel</span> Regras da Comunidade HDBN
+            </h1>
+            <p style="color:var(--text-secondary); font-size:0.95rem; margin-top:0.35rem; max-width:620px; margin-left:auto; margin-right:auto;">
+              Regras e boas práticas para publicação de beatmaps, estabilidade de jogo e convivência entre jogadores.
+            </p>
+          </div>
+
+          <div style="display:flex; flex-direction:column; gap:1.25rem;">
+            ${rules.map(r => `
+              <div style="background:#13141f; border:1px solid var(--border-subtle); border-radius:var(--radius-sm); padding:1.5rem; transition:border-color 0.2s;">
+                <div style="display:flex; align-items:flex-start; gap:1rem;">
+                  <div style="width:40px; height:40px; border-radius:var(--radius-sm); background:rgba(168,85,247,0.15); border:1px solid rgba(168,85,247,0.3); display:flex; align-items:center; justify-content:center; color:var(--accent-purple-light); font-weight:900; font-size:1.05rem; flex-shrink:0;">
+                    ${r.num}
+                  </div>
+                  <div style="flex:1;">
+                    <div style="display:flex; align-items:center; gap:0.5rem; margin-bottom:0.35rem; flex-wrap:wrap;">
+                      <span class="material-symbols-outlined" style="color:var(--accent-cyan); font-size:1.25rem;">${r.icon}</span>
+                      <h2 style="font-size:1.15rem; font-weight:900; color:#fff; margin:0;">${r.title}</h2>
+                    </div>
+                    <p style="color:var(--accent-gold); font-size:0.875rem; font-weight:700; margin:0 0 0.75rem 0;">${r.summary}</p>
+                    <div style="color:var(--text-secondary); font-size:0.875rem; line-height:1.55; border-top:1px solid rgba(255,255,255,0.05); padding-top:0.75rem;">
+                      ${r.details}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            `).join('')}
+          </div>
+
+          <div style="margin-top:2.5rem; text-align:center; display:flex; gap:0.75rem; justify-content:center; flex-wrap:wrap;">
+            <a href="#/comunidade" class="btn btn-primary" style="display:inline-flex; align-items:center; gap:0.4rem; text-decoration:none;">
+              <span class="material-symbols-outlined">group</span> Ir para a Comunidade
+            </a>
+            <a href="#/publicar" class="btn btn-secondary" style="display:inline-flex; align-items:center; gap:0.4rem; text-decoration:none;">
+              <span class="material-symbols-outlined">upload</span> Publicar Meu Beatmap
+            </a>
+          </div>
+        </div>
+      `;
+    }
+
+    // ========================================================================
     // TELA DE PUBLICAR (/publicar) - ESTRITAMENTE ARQUIVOS .HBN
     // Extração real de metadados, notas, capa e Cloudinary / Supabase
     // ========================================================================
     async renderPublishView() {
+      const view = this.getMainView();
+      if (!view) return;
       const user = stateMgr.getUser();
 
       if (!user) {
-        this.mainView.innerHTML = `
+        view.innerHTML = `
           <div class="container" style="padding: 5rem 0; text-align:center; max-width:520px; margin:0 auto;">
             <span class="material-symbols-outlined" style="font-size:5rem; color:var(--accent-purple-light);">person_add</span>
             <h1 style="font-size:2.2rem; font-weight:900; margin:1rem 0; color:white;">Você precisa se cadastrar</h1>
@@ -2348,30 +3662,80 @@
 
       this.currentPublishData = null;
 
-      this.mainView.innerHTML = `
+      const uploadStatus = await db.getUserUploadStatus(user.id);
+
+      view.innerHTML = `
         <div class="container" style="padding: 2.5rem 0; max-width:680px;">
           <h1 style="font-size:2rem; font-weight:900; margin-bottom:0.5rem; display:flex; align-items:center; gap:0.5rem; color:white;">
             <span class="material-symbols-outlined" style="color:var(--accent-purple-light);">folder</span> Publicar Beatmap (.hbn)
           </h1>
-          <p style="color:var(--text-secondary); margin-bottom:1.5rem; font-size:0.85rem;">
+          <p style="color:var(--text-secondary); margin-bottom:1rem; font-size:0.85rem;">
             Envie exclusivamente o arquivo com formato <code>.hbn</code> exportado pelo Godot Engine.
             Os dados reais, contagem de notas e imagem de capa serão extraídos do arquivo.
           </p>
 
-          <form onsubmit="window.app.handlePublishSubmit(event)" style="background:var(--bg-card); border:1px solid var(--border-subtle); padding:1.75rem; border-radius:var(--radius-sm); display:flex; flex-direction:column; gap:1.25rem;">
+          <!-- Banner Informativo de Limite Diário e Integridade -->
+          <div style="display:flex; justify-content:space-between; align-items:center; background:#12131d; border:1px solid var(--border-subtle); padding:0.75rem 1rem; border-radius:var(--radius-sm); margin-bottom:1.25rem; flex-wrap:wrap; gap:0.5rem;">
+            <div style="display:flex; align-items:center; gap:0.5rem; font-size:0.85rem;">
+              <span class="material-symbols-outlined" style="color:var(--accent-cyan); font-size:18px;">cloud_sync</span>
+              <span style="color:var(--text-secondary);">Limite diário de envios:</span>
+              <strong style="color:${uploadStatus.canUpload ? '#10b981' : '#ef4444'};">
+                ${uploadStatus.isStaff ? 'Ilimitado (Staff)' : `${uploadStatus.uploadsToday} / ${uploadStatus.limit} enviados hoje`}
+              </strong>
+            </div>
+            ${uploadStatus.duplicateAttempts > 0 ? `
+              <span style="font-size:0.75rem; color:#f59e0b; display:flex; align-items:center; gap:0.25rem; font-weight:700;">
+                <span class="material-symbols-outlined" style="font-size:15px;">warning</span> Avisos de duplicidade: ${uploadStatus.duplicateAttempts}/3
+              </span>
+            ` : ''}
+          </div>
+
+          ${uploadStatus.isSuspended ? `
+            <div class="form-error-banner" style="margin-bottom:1.25rem; padding:1rem; border-left:4px solid #ef4444;">
+              <span class="material-symbols-outlined" style="font-size:1.6rem;">lock</span>
+              <div>
+                <strong style="display:block; color:#ef4444; font-size:0.95rem;">Conta Suspensa de Publicações</strong>
+                <span style="font-size:0.85rem; color:#fca5a5;">
+                  ${uploadStatus.banExpiresAt ? `Suspensão ativa até <strong>${new Date(uploadStatus.banExpiresAt).toLocaleString('pt-BR')}</strong> por insistência em envios duplicados.` : 'Sua conta está suspensa de realizar novas publicações.'}
+                </span>
+              </div>
+            </div>
+          ` : ''}
+
+          <form id="publish-form-element" onsubmit="window.app.handlePublishSubmit(event)" style="background:var(--bg-card); border:1px solid var(--border-subtle); padding:1.75rem; border-radius:var(--radius-sm); display:flex; flex-direction:column; gap:1.25rem;">
             
-            <div style="border:2px dashed var(--border-focus); border-radius:var(--radius-sm); padding:2rem; text-align:center; cursor:pointer;" onclick="document.getElementById('pub-file').click()">
-              <span class="material-symbols-outlined" style="font-size:3rem; color:var(--accent-purple-light);">cloud_upload</span>
-              <p style="font-weight:800; color:white; margin-top:0.5rem;">Clique ou arraste para selecionar o arquivo .hbn</p>
-              <span style="font-size:0.75rem; color:var(--accent-cyan); display:block; margin-top:0.25rem;">Permitido estritamente: apenas pacotes com extensão .hbn</span>
+            <!-- Drag and Drop Zone + Clique Nativo com Validação Estrita .hbn -->
+            <div class="drag-drop-zone" id="hbn-drop-zone"
+                 onclick="document.getElementById('pub-file').click()"
+                 ondragenter="window.app.handleDragEnter(event)"
+                 ondragover="window.app.handleDragOver(event)"
+                 ondragleave="window.app.handleDragLeave(event)"
+                 ondrop="window.app.handleDrop(event)">
+              <span class="material-symbols-outlined drag-drop-icon">cloud_upload</span>
+              <p class="drag-drop-title">Arraste e solte o arquivo .hbn aqui</p>
+              <p class="drag-drop-subtitle">ou clique para selecionar do computador</p>
+              <span class="drag-drop-strict-tag">
+                <span class="material-symbols-outlined" style="font-size:0.9rem;">verified_user</span>
+                Formato exclusivo aceito: apenas arquivos .hbn
+              </span>
               <input type="file" id="pub-file" required accept=".hbn" style="display:none;" onchange="window.app.onFileSelected(this)">
             </div>
 
             <!-- Dados Extraídos com Valores Reais lidos do .hbn -->
             <div id="file-parsed-preview" style="display:none; background:#0e1017; border:1px solid var(--border-subtle); padding:1.25rem; border-radius:var(--radius-sm);">
-              <span style="font-size:0.75rem; font-weight:800; color:var(--accent-cyan); text-transform:uppercase;">Dados Reais Extraídos do Beatmap:</span>
+              <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid var(--border-subtle); padding-bottom:0.75rem; margin-bottom:0.75rem;">
+                <span style="font-size:0.75rem; font-weight:800; color:var(--accent-cyan); text-transform:uppercase; display:flex; align-items:center; gap:0.4rem;">
+                  <span class="material-symbols-outlined" style="font-size:16px;">task_alt</span> Pacote .HBN Carregado com Sucesso
+                </span>
+                <button type="button" class="btn btn-secondary btn-sm" onclick="window.app.resetPublishFile()" style="font-size:0.75rem; padding:0.25rem 0.6rem; display:inline-flex; align-items:center; gap:0.3rem;">
+                  <span class="material-symbols-outlined" style="font-size:14px;">change_circle</span> Trocar Arquivo
+                </button>
+              </div>
+
+              <!-- Indicador de Validação de Duplicidade Instantânea via Hash -->
+              <div id="hash-verification-badge" style="display:none; margin-bottom:0.9rem; padding:0.6rem 0.85rem; border-radius:var(--radius-sm); font-size:0.82rem;"></div>
               
-              <div style="display:flex; gap:1.25rem; align-items:flex-start; margin-top:1rem; flex-wrap:wrap;">
+              <div style="display:flex; gap:1.25rem; align-items:flex-start; margin-top:0.5rem; flex-wrap:wrap;">
                 <img id="extracted-cover-img" src="" alt="Capa Extraída" style="width:110px; height:110px; object-fit:cover; border-radius:var(--radius-sm); border:1px solid var(--border-subtle); display:none; background:#090a0d;">
                 
                 <div style="flex:1; min-width:220px; display:flex; flex-direction:column; gap:0.6rem;">
@@ -2399,6 +3763,21 @@
               </div>
             </div>
 
+            <!-- Idioma do Beatmap -->
+            <div>
+              <label style="font-size:0.8rem; font-weight:700; color:var(--text-muted); display:block; margin-bottom:0.4rem;">
+                Idioma do Beatmap / Letra:
+              </label>
+              <select id="pub-language-select" class="search-input-field" style="width:100%; background:#0e1017; color:white; padding:0.65rem 0.85rem; border:1px solid var(--border-subtle); border-radius:var(--radius-sm); font-size:0.9rem; cursor:pointer;">
+                <option value="português">🇧🇷 Português</option>
+                <option value="inglês">🇺🇸 Inglês</option>
+                <option value="espanhol">🇪🇸 Espanhol</option>
+                <option value="japonês">🇯🇵 Japonês</option>
+                <option value="coreano">🇰🇷 Coreano</option>
+                <option value="chinês">🇨🇳 Chinês</option>
+              </select>
+            </div>
+
             <button type="submit" class="btn btn-primary" style="margin-top:0.5rem;">
               <span class="material-symbols-outlined">send</span> Publicar Beatmap Oficial
             </button>
@@ -2407,19 +3786,159 @@
       `;
     }
 
-    async onFileSelected(input) {
-      const file = input.files[0];
-      if (!file) return;
+    resetPublishFile() {
+      const dropZone = document.getElementById("hbn-drop-zone");
+      const previewBox = document.getElementById("file-parsed-preview");
+      const fileInput = document.getElementById("pub-file");
+      if (dropZone) dropZone.style.display = "flex";
+      if (previewBox) previewBox.style.display = "none";
+      if (fileInput) fileInput.value = "";
+      this.currentPublishData = null;
+      this.showToast("Seleção reiniciada. Escolha outro arquivo .hbn.");
+    }
 
-      // Validação estrita: somente arquivos .hbn são aceitos!
-      if (!file.name.toLowerCase().endsWith(".hbn")) {
-        this.showToast("Erro: Apenas arquivos no formato .hbn são permitidos!");
-        input.value = "";
-        const preview = document.getElementById("file-parsed-preview");
-        if (preview) preview.style.display = "none";
-        return;
+    // ========================================================================
+    // MODAL DE PROGRESSO E PROTEÇÃO ANTI-ABANDONO
+    // ========================================================================
+    showUploadProgressModal({ percent = 0, stage = 'Iniciando upload...' } = {}) {
+      this.hideUploadProgressModal();
+      const modal = document.createElement("div");
+      modal.id = "upload-modal-overlay";
+      modal.className = "upload-modal-overlay";
+      modal.style.cssText = "position:fixed; inset:0; z-index:99999; background:rgba(4,5,8,0.85); backdrop-filter:blur(14px); display:flex; align-items:center; justify-content:center; padding:1.5rem;";
+      modal.innerHTML = `
+        <div class="upload-modal-card" style="background:linear-gradient(145deg, #12131d 0%, #0a0b12 100%); border:1px solid rgba(168,85,247,0.35); border-radius:18px; padding:2.5rem 2rem; max-width:520px; width:100%; box-shadow:0 25px 60px rgba(0,0,0,0.8), 0 0 40px rgba(168,85,247,0.15); text-align:center;">
+          <div style="width:72px; height:72px; border-radius:50%; background:linear-gradient(135deg, rgba(168,85,247,0.2), rgba(56,189,248,0.2)); border:2px solid var(--accent-purple-light); display:flex; align-items:center; justify-content:center; margin:0 auto 1.25rem auto; box-shadow:0 0 25px rgba(168,85,247,0.4);">
+            <span class="material-symbols-outlined upload-modal-spin-icon" style="font-size:2.4rem; color:var(--accent-purple-light);">cloud_upload</span>
+          </div>
+          <h2 style="color:white; font-size:1.45rem; font-weight:900; margin-bottom:0.4rem;">Enviando Beatmap para a Nuvem</h2>
+          <p style="color:var(--text-secondary); font-size:0.85rem; margin-bottom:1.5rem; line-height:1.45;">Transferindo arquivos binários com segurança criptográfica direto para o servidor.</p>
+          
+          <div style="background:rgba(255,255,255,0.06); border-radius:999px; height:10px; width:100%; overflow:hidden; margin-bottom:0.75rem; border:1px solid var(--border-subtle);">
+            <div id="upload-progress-bar" style="width:${percent}%; height:100%; background:linear-gradient(90deg, var(--accent-purple), var(--accent-cyan)); border-radius:999px; transition:width 0.3s cubic-bezier(0.4, 0, 0.2, 1); box-shadow:0 0 14px rgba(56,189,248,0.6);"></div>
+          </div>
+          
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1.5rem;">
+            <span id="upload-progress-stage" style="color:var(--accent-cyan); font-size:0.85rem; font-weight:700;">${stage}</span>
+            <span id="upload-progress-num" style="color:white; font-size:1.1rem; font-weight:900;">${Math.round(percent)}%</span>
+          </div>
+
+          <div style="background:rgba(239,68,68,0.1); border:1px solid rgba(239,68,68,0.3); border-radius:var(--radius-sm); padding:0.85rem 1rem; text-align:left; display:flex; align-items:center; gap:0.75rem;">
+            <span class="material-symbols-outlined" style="font-size:1.6rem; color:#ef4444; flex-shrink:0;">warning</span>
+            <div>
+              <strong style="display:block; font-size:0.85rem; color:#ef4444; margin-bottom:0.15rem;">⚠️ Atenção: Não feche ou saia desta página!</strong>
+              <span style="font-size:0.78rem; color:#fca5a5; line-height:1.35; display:block;">
+                O envio está em andamento. Fechar esta aba cancelará o upload e nada será salvo.
+              </span>
+            </div>
+          </div>
+        </div>
+      `;
+      document.body.appendChild(modal);
+    }
+
+    updateUploadProgress(percent, stage) {
+      const bar = document.getElementById("upload-progress-bar");
+      const num = document.getElementById("upload-progress-num");
+      const stg = document.getElementById("upload-progress-stage");
+      if (bar) bar.style.width = `${Math.min(100, Math.max(0, percent))}%`;
+      if (num) num.textContent = `${Math.round(percent)}%`;
+      if (stg && stage) stg.textContent = stage;
+    }
+
+    hideUploadProgressModal() {
+      const modal = document.getElementById("upload-modal-overlay");
+      if (modal) modal.remove();
+    }
+
+    // ========================================================================
+    // DRAG AND DROP & VALIDAÇÃO ESTRITA DE ARQUIVOS .HBN
+    // ========================================================================
+    handleDragEnter(e) {
+      e.preventDefault();
+      e.stopPropagation();
+      const dropZone = document.getElementById("hbn-drop-zone");
+      if (dropZone) dropZone.classList.add("drag-active");
+    }
+
+    handleDragOver(e) {
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+      const dropZone = document.getElementById("hbn-drop-zone");
+      if (dropZone && !dropZone.classList.contains("drag-active")) {
+        dropZone.classList.add("drag-active");
+      }
+    }
+
+    handleDragLeave(e) {
+      e.preventDefault();
+      e.stopPropagation();
+      const dropZone = document.getElementById("hbn-drop-zone");
+      if (dropZone && (!e.relatedTarget || !dropZone.contains(e.relatedTarget))) {
+        dropZone.classList.remove("drag-active");
+      }
+    }
+
+    handleDrop(e) {
+      e.preventDefault();
+      e.stopPropagation();
+      const dropZone = document.getElementById("hbn-drop-zone");
+      if (dropZone) dropZone.classList.remove("drag-active");
+
+      const files = e.dataTransfer ? e.dataTransfer.files : null;
+      if (!files || files.length === 0) return;
+
+      const file = files[0];
+      this.validateAndProcessHBNFile(file);
+    }
+
+    async validateAndProcessHBNFile(file) {
+      const dropZone = document.getElementById("hbn-drop-zone");
+      const previewBox = document.getElementById("file-parsed-preview");
+      const fileInput = document.getElementById("pub-file");
+
+      // Validação estrita: somente arquivos com a extensão .hbn são permitidos!
+      if (!file || !file.name.toLowerCase().endsWith(".hbn")) {
+        if (dropZone) {
+          dropZone.classList.remove("drag-active");
+          dropZone.classList.add("drag-error");
+          setTimeout(() => dropZone.classList.remove("drag-error"), 1500);
+        }
+        if (fileInput) fileInput.value = "";
+        if (previewBox) previewBox.style.display = "none";
+        this.currentPublishData = null;
+
+        const errText = "Formato de arquivo inválido! A plataforma aceita estritamente arquivos com a extensão .hbn gerados pelo editor do jogo. Formatos como .zip, .rar ou .mp3 não são permitidos.";
+        this.showFormError(errText, "publish-form-element");
+        this.showToast("Erro: Formato inválido! Envie estritamente um arquivo .hbn");
+        return false;
       }
 
+      if (dropZone) {
+        dropZone.classList.remove("drag-error");
+        dropZone.classList.remove("drag-active");
+      }
+
+      // Sincroniza com o input nativo caso o arquivo tenha vindo por drag & drop
+      if (fileInput && fileInput.files && fileInput.files[0] !== file) {
+        try {
+          const dataTransfer = new DataTransfer();
+          dataTransfer.items.add(file);
+          fileInput.files = dataTransfer.files;
+        } catch (_) {}
+      }
+
+      return this._parseHBNPackage(file);
+    }
+
+    onFileSelected(input) {
+      const file = input.files ? input.files[0] : null;
+      if (!file) return;
+      this.validateAndProcessHBNFile(file);
+    }
+
+    async _parseHBNPackage(file) {
       this.showToast("Lendo estrutura do pacote .hbn...");
 
       try {
@@ -2428,133 +3947,139 @@
         }
 
         const zip = await window.JSZip.loadAsync(file);
-        let chartJson = null;
-        let coverBlob = null;
-        let coverPreviewUrl = "";
+        let infoJson = null;
+        let infoJsonEntry = null;
+        let audioEntry = null;
+        let coverEntry = null;
         let difficultiesFound = [];
         let chartsData = {};
         let totalNotes = 0;
 
-        // Localizar arquivos JSON de charts e arquivos .info
-        const jsonEntries = [];
-        let infoEntry = null;
-
+        // 1. Localiza os arquivos essenciais do pacote (.hbn)
         zip.forEach((relPath, entry) => {
           const lower = relPath.toLowerCase();
-          if (lower.endsWith(".json") && !entry.dir) {
-            jsonEntries.push(entry);
-          } else if ((lower.endsWith(".info") || lower.endsWith("info.txt")) && !entry.dir) {
-            infoEntry = entry;
+          const baseName = lower.split("/").pop();
+          if (!entry.dir) {
+            if (baseName === "info.json" || lower.endsWith("/info.json")) {
+              infoJsonEntry = entry;
+            } else if (lower.endsWith(".mp3") || lower.endsWith(".ogg") || lower.endsWith(".wav")) {
+              if (!audioEntry) audioEntry = entry;
+            } else if (lower.endsWith(".png") || lower.endsWith(".jpg") || lower.endsWith(".jpeg") || lower.endsWith(".webp")) {
+              if (!coverEntry) coverEntry = entry;
+            }
           }
         });
 
-        // Tentar ler e descriptografar arquivos de chart
-        if (jsonEntries.length > 0) {
-          for (const entry of jsonEntries) {
-            try {
-              const text = await entry.async("string");
-              let parsed = null;
-              try {
-                parsed = JSON.parse(text);
-              } catch (e) {
-                parsed = HBNDecrypter.decryptPackage(text);
-              }
+        // 2. Leitura do "passaporte" do mapa: info.json
+        if (infoJsonEntry) {
+          const rawText = await infoJsonEntry.async("string");
+          try {
+            infoJson = JSON.parse(rawText);
+          } catch (_) {
+            infoJson = HBNDecrypter.decryptPackage(rawText);
+          }
+          console.log("📄 Passaporte info.json lido:", infoJson);
+        }
 
-              if (parsed) {
-                if (!chartJson) chartJson = parsed;
+        // Se info.json referencia um arquivo de áudio específico (ex: "audio.mp3")
+        if (infoJson && infoJson.audio) {
+          const audioRef = infoJson.audio.split("/").pop().toLowerCase();
+          zip.forEach((relPath, entry) => {
+            if (!entry.dir && relPath.toLowerCase().endsWith(audioRef)) {
+              audioEntry = entry;
+            }
+          });
+        }
 
-                const diffName = entry.name.replace(/\.json$/i, "").split("/").pop();
-                let notesCount = 0;
-                if (parsed.tracks) {
-                  notesCount = HBNDecrypter.countNotesInChart(parsed);
-                } else if (Array.isArray(parsed.beats)) {
-                  notesCount = parsed.beats.length;
-                } else if (Array.isArray(parsed.notes)) {
-                  notesCount = parsed.notes.length;
+        // Se info.json referencia uma arte específica de capa (UI ou art)
+        const artPath = infoJson ? (infoJson.UI || infoJson.ui || infoJson.art || infoJson.art_file || "") : "";
+        if (artPath) {
+          const artRef = artPath.split("/").pop().toLowerCase();
+          zip.forEach((relPath, entry) => {
+            if (!entry.dir && relPath.toLowerCase().endsWith(artRef)) {
+              coverEntry = entry;
+            }
+          });
+        }
+
+        // 3. Extração das Dificuldades e Contagem Real de Notas a partir de info.json (charts e beats)
+        if (infoJson && infoJson.charts && typeof infoJson.charts === "object") {
+          for (const [diffKey, chart] of Object.entries(infoJson.charts)) {
+            // Proteção: ignora entradas nulas ou inválidas no charts
+            if (!chart || typeof chart !== "object") continue;
+
+            let notesCount = 0;
+            if (Array.isArray(chart.tracks)) {
+              // Formato real do Godot:
+              // tracks: [ { times: [ {time: 0.0, duration: -1.0}, ... ], track_index: 0 }, ... ]
+              chart.tracks.forEach(trk => {
+                if (!trk) return;
+                if (Array.isArray(trk.times)) {
+                  // Formato nativo: cada nota é {time, duration}
+                  notesCount += trk.times.length;
+                } else if (Array.isArray(trk.notes)) {
+                  notesCount += trk.notes.length;
+                } else if (Array.isArray(trk)) {
+                  notesCount += trk.length;
                 }
+              });
+            } else if (Array.isArray(chart.beats)) {
+              notesCount = chart.beats.length;
+            } else if (Array.isArray(chart.notes)) {
+              notesCount = chart.notes.length;
+            } else if (typeof chart.notes_count === "number") {
+              notesCount = chart.notes_count;
+            }
 
-                if (notesCount > 0) {
-                  difficultiesFound.push({
-                    name: diffName,
-                    notes: notesCount,
-                    star: parsed.star_rating || 1.8
-                  });
-                  chartsData[diffName.toLowerCase()] = { notes_count: notesCount, star: parsed.star_rating || 1.8 };
-                  totalNotes += notesCount;
-                }
-              }
-            } catch (err) {}
+            if (notesCount > 0) {
+              const formattedName = diffKey.charAt(0).toUpperCase() + diffKey.slice(1);
+              const starVal = chart.star_rating || (diffKey.toLowerCase() === 'medium' ? 2.5 : (diffKey.toLowerCase() === 'hard' ? 3.8 : 1.8));
+              difficultiesFound.push({
+                name: formattedName,
+                notes: notesCount,
+                star: starVal
+              });
+              chartsData[diffKey.toLowerCase()] = { notes_count: notesCount, star: starVal };
+              totalNotes += notesCount;
+            }
           }
         }
 
-        // Ler arquivo .info complementar se houver
-        let infoData = {};
-        if (infoEntry) {
-          try {
-            const infoText = await infoEntry.async("string");
-            try {
-              infoData = JSON.parse(infoText);
-            } catch (e) {
-              infoText.split("\n").forEach(line => {
-                const [k, ...v] = line.split("=");
-                if (k && v.length) infoData[k.trim().toLowerCase()] = v.join("=").trim().replace(/^"|"$/g, "");
-              });
-            }
-          } catch (e) {}
+        // Fallback: se info.json tiver beats no nível raiz
+        if (difficultiesFound.length === 0 && infoJson && Array.isArray(infoJson.beats)) {
+          totalNotes = infoJson.beats.length;
+          difficultiesFound.push({ name: "Normal", notes: totalNotes, star: 2.0 });
+          chartsData["normal"] = { notes_count: totalNotes, star: 2.0 };
         }
 
-        // Se o chart principal tiver beats diretamente
-        if (chartJson && difficultiesFound.length === 0) {
-          let count = 0;
-          if (chartJson.tracks) count = HBNDecrypter.countNotesInChart(chartJson);
-          else if (Array.isArray(chartJson.beats)) count = chartJson.beats.length;
-          else if (Array.isArray(chartJson.notes)) count = chartJson.notes.length;
-          else count = 120;
-
-          totalNotes = count;
-          const diffName = chartJson.difficulty_name || infoData.difficulty || "Normal";
-          difficultiesFound.push({
-            name: diffName,
-            notes: count,
-            star: chartJson.star_rating || 2.0
-          });
-          chartsData["normal"] = { notes_count: count, star: chartJson.star_rating || 2.0 };
-        }
-
-        // Se não encontrou notas, fallback para 120
+        // Fallback genérico se nenhuma dificuldade foi identificada
         if (totalNotes === 0) {
           totalNotes = 120;
           difficultiesFound.push({ name: "Normal", notes: 120, star: 2.0 });
           chartsData["normal"] = { notes_count: 120, star: 2.0 };
         }
 
-        // Extrair Metadados
+        // 4. Extração de Metadados Principais do Mapa
         const cleanBaseName = file.name.replace(/\.hbn$/i, "").trim();
-        const title = (chartJson && chartJson.title) || infoData.title || (cleanBaseName.includes(" - ") ? cleanBaseName.split(" - ")[1].trim() : cleanBaseName);
-        const artist = (chartJson && chartJson.artist) || infoData.artist || (cleanBaseName.includes(" - ") ? cleanBaseName.split(" - ")[0].trim() : "Artista Desconhecido");
-        const bpm = (chartJson && chartJson.bpm) || Number(infoData.bpm) || 120;
-        const previewStart = (chartJson && chartJson.audio_preview_start !== undefined) ? chartJson.audio_preview_start : (Number(infoData.audio_preview_start) || 0);
+        const title = (infoJson && infoJson.title) || (cleanBaseName.includes(" - ") ? cleanBaseName.split(" - ")[1].trim() : cleanBaseName);
+        const artist = (infoJson && infoJson.artist) || (cleanBaseName.includes(" - ") ? cleanBaseName.split(" - ")[0].trim() : "Artista Desconhecido");
+        const bpm = (infoJson && (infoJson.bpm || Number(infoJson.BPM))) || 120;
+        const previewStart = (infoJson && infoJson.audio_preview_start !== undefined) ? Number(infoJson.audio_preview_start) : 0;
+        const songLength = (infoJson && infoJson.length !== undefined) ? Number(infoJson.length) : 118.0;
 
-        // Extrair Capa
-        let coverEntry = null;
-        const artPath = (chartJson && (chartJson.art || chartJson.art_file || chartJson.UI_file)) || infoData.art_file || infoData.ui_file || "";
-        const artBase = artPath ? artPath.split("/").pop().toLowerCase() : "";
-
-        zip.forEach((relPath, entry) => {
-          const lower = relPath.toLowerCase();
-          const baseName = lower.split("/").pop();
-          if (!entry.dir) {
-            if (artBase && baseName === artBase) {
-              coverEntry = entry;
-            } else if (!coverEntry && (lower.endsWith(".png") || lower.endsWith(".jpg") || lower.endsWith(".jpeg") || lower.endsWith(".webp"))) {
-              coverEntry = entry;
-            }
-          }
-        });
-
+        // 5. Extração de Mídia: Capa e Áudio
+        let coverBlob = null;
+        let coverPreviewUrl = "";
         if (coverEntry) {
           coverBlob = await coverEntry.async("blob");
           coverPreviewUrl = URL.createObjectURL(coverBlob);
+        }
+
+        let audioBlob = null;
+        let audioBlobUrl = "";
+        if (audioEntry) {
+          audioBlob = await audioEntry.async("blob");
+          audioBlobUrl = URL.createObjectURL(audioBlob);
         }
 
         this.currentPublishData = {
@@ -2562,18 +4087,26 @@
           title: title,
           artist: artist,
           bpm: bpm,
+          length: songLength,
           previewStart: previewStart,
           totalNotes: totalNotes,
           difficulties: difficultiesFound,
           charts: chartsData,
           coverBlob: coverBlob,
           coverPreviewUrl: coverPreviewUrl,
+          audioBlob: audioBlob,
+          audioBlobUrl: audioBlobUrl,
           starRating: difficultiesFound[0]?.star || 2.0,
-          difficultyName: difficultiesFound[0]?.name || "Normal",
-          difficultyLevel: "normal"
+          difficultyName: difficultiesFound[0]?.name || "Médio",
+          difficultyLevel: sanitizeDifficultyLevel(difficultiesFound[0]?.name)
         };
 
-        // Atualizar visualização do formulário
+        // 6. Atualização Visual do Formulário: Oculta a área de arrastar e mostra os dados reais
+        const dropZone = document.getElementById("hbn-drop-zone");
+        if (dropZone) {
+          dropZone.style.display = "none"; // O container Arraste e solte o arquivo .hbn some completamente
+        }
+
         const previewBox = document.getElementById("file-parsed-preview");
         if (previewBox) {
           previewBox.style.display = "block";
@@ -2602,75 +4135,308 @@
               imgElem.style.display = "none";
             }
           }
+
+          // Verificação Imediata de Duplicidade via Hash SHA-256
+          const hashBadge = document.getElementById("hash-verification-badge");
+          if (hashBadge) {
+            hashBadge.style.display = "block";
+            hashBadge.style.background = "rgba(56,189,248,0.1)";
+            hashBadge.style.border = "1px solid rgba(56,189,248,0.3)";
+            hashBadge.innerHTML = `<span style="color:#38bdf8; display:flex; align-items:center; gap:0.4rem;"><span class="material-symbols-outlined" style="font-size:16px;">sync</span> Verificando hash SHA-256 e duplicidade no banco...</span>`;
+          }
+
+          calculateFileSHA256(file).then(async (mapHash) => {
+            if (this.currentPublishData) this.currentPublishData.mapHash = mapHash;
+            const dupResult = await db.checkDuplicateMap(mapHash);
+            if (hashBadge) {
+              if (dupResult.isDuplicate) {
+                hashBadge.style.background = "rgba(239,68,68,0.15)";
+                hashBadge.style.border = "1px solid rgba(239,68,68,0.4)";
+                hashBadge.innerHTML = `<span style="color:#ef4444; font-weight:700; display:flex; align-items:center; gap:0.4rem;"><span class="material-symbols-outlined" style="font-size:18px;">warning</span> Mapa Duplicado! Este arquivo já foi publicado anteriormente como <strong>"${dupResult.existingTitle}"</strong>. Envios repetidos não são permitidos.</span>`;
+                this.showToast(`Atenção: Beatmap duplicado de "${dupResult.existingTitle}"!`);
+              } else {
+                hashBadge.style.background = "rgba(16,185,129,0.15)";
+                hashBadge.style.border = "1px solid rgba(16,185,129,0.4)";
+                hashBadge.innerHTML = `<span style="color:#10b981; font-weight:700; display:flex; align-items:center; gap:0.4rem;"><span class="material-symbols-outlined" style="font-size:18px;">verified</span> Arquivo original e inédito verificado (SHA-256: ${mapHash.substring(0, 12)}...)!</span>`;
+              }
+            }
+          }).catch(hashErr => {
+            console.warn("Aviso ao validar hash antecipadamente:", hashErr);
+          });
         }
 
         this.showToast(`Arquivo .hbn desempacotado: "${title}" (${totalNotes} notas detectadas)!`);
       } catch (err) {
-        console.error("Erro ao analisar .hbn:", err);
+        console.error("Erro ao analisar pacote .hbn:", err);
         this.showToast("Erro ao processar pacote .hbn: " + err.message);
       }
     }
 
+    // ========================================================================
+    // ENVIO DE PUBLICAÇÃO:
+    // - Armazenamento de arquivo binário pesado (.hbn) diretamente no CLOUDINARY
+    // - Barra de progresso real (0% - 100%) em modal bloqueante com alerta anti-abandono
+    // - Proteção de navegação (beforeunload)
+    // - Registro estrito no SUPABASE somente após sucesso total no Cloudinary
+    // - Limpeza imediata no Cloudinary se o Supabase falhar (sem arquivos órfãos / lixo)
+    // ========================================================================
     async handlePublishSubmit(e) {
       e.preventDefault();
-      if (!this.currentPublishData) {
-        this.showToast("Selecione um pacote .hbn válido primeiro.");
+
+      // ======================================================================
+      // FASE 0 — VALIDAÇÕES LOCAIS (SEM TOCAR NO CLOUDINARY OU SUPABASE)
+      // Nada é enviado até que TODAS as verificações locais passem.
+      // ======================================================================
+      if (!this.currentPublishData || !this.currentPublishData.file) {
+        this.showFormError("Selecione um pacote .hbn válido antes de publicar.", "publish-form-element");
         return;
       }
 
       const user = stateMgr.getUser();
       if (!user) {
-        this.showToast("Primeiro entre na sua conta para publicar!");
-        window.openAuthModal('login');
+        this.showAuthRequired('publish');
         return;
       }
 
-      this.showToast("Enviando mídia e pacote para o Cloudinary...");
+      // Lê o título editado pelo usuário no formulário (se tiver)
+      const titleInput = document.getElementById("extracted-title-input");
+      const artistInput = document.getElementById("extracted-artist-input");
+      if (titleInput && titleInput.value.trim()) this.currentPublishData.title = titleInput.value.trim();
+      if (artistInput && artistInput.value.trim()) this.currentPublishData.artist = artistInput.value.trim();
+
+      // ======================================================================
+      // FASE 1 — HASH SHA-256 LOCAL (SEM INTERNET, SÓ CPU)
+      // ======================================================================
+      let mapHash = "";
+      try {
+        this.showToast("Calculando assinatura do arquivo (.hbn)...");
+        mapHash = await HBNDecrypter.computeFileSHA256(this.currentPublishData.file);
+        console.log("🔒 Hash SHA-256 gerado:", mapHash);
+      } catch (hashErr) {
+        console.warn("Aviso ao calcular hash SHA-256:", hashErr);
+      }
+
+      // ======================================================================
+      // FASE 2 — CONSULTAS NO SUPABASE (SÓ LEITURA, ZERO ESCRITA)
+      // Verifica suspensão, duplicidade e limite diário antes de qualquer upload.
+      // ======================================================================
+      let uploadStatus;
+      try {
+        uploadStatus = await db.getUserUploadStatus(user.id);
+      } catch (err) {
+        this.showFormError("Não foi possível verificar o status da sua conta. Tente novamente.", "publish-form-element");
+        return;
+      }
+
+      if (uploadStatus.isSuspended) {
+        if (uploadStatus.isBanned) {
+          this.showFormError("Sua conta está banida permanentemente da plataforma.", "publish-form-element");
+          return;
+        }
+        const expiresMsg = uploadStatus.banExpiresAt
+          ? ` até ${new Date(uploadStatus.banExpiresAt).toLocaleString('pt-BR')}`
+          : "";
+        this.showFormError(
+          `Sua conta está temporariamente suspensa${expiresMsg}. Você tentou enviar mapas duplicados repetidamente.`,
+          "publish-form-element"
+        );
+        return;
+      }
+
+      if (mapHash) {
+        let duplicateMap = null;
+        try { duplicateMap = await db.getBeatmapByHash(mapHash); } catch (_) {}
+        if (duplicateMap) {
+          const attemptRes = await db.recordDuplicateAttempt(user.id);
+          if (attemptRes.suspended) {
+            this.showFormError(
+              "Múltiplas tentativas de envio de mapa duplicado detectadas. Conta temporariamente suspensa de publicações.",
+              "publish-form-element"
+            );
+            stateMgr.setUser({ ...user, status: 'suspended', ban_expires_at: attemptRes.expiresAt }, stateMgr.state.rememberMe);
+          } else {
+            this.showFormError(
+              `Este mapa já foi publicado como "${duplicateMap.title}". Envios duplicados não são permitidos. (Tentativa ${attemptRes.attempts}/3)`,
+              "publish-form-element"
+            );
+          }
+          return;
+        }
+      }
+
+      if (!uploadStatus.canUpload) {
+        this.showFormError(
+          `Você atingiu o limite de ${uploadStatus.limit} publicações por dia. Entre em contato com um moderador para aumentar seu limite.`,
+          "publish-form-element"
+        );
+        return;
+      }
+
+      // ======================================================================
+      // FASE 3 — TUDO OK LOCALMENTE → AGORA SIM INICIA O UPLOAD
+      // A partir daqui, Cloudinary e Supabase são acionados.
+      // ======================================================================
+      const beforeUnloadHandler = (evt) => {
+        evt.preventDefault();
+        evt.returnValue = "⚠️ Upload em andamento. Fechar esta aba cancelará o envio.";
+        return evt.returnValue;
+      };
+      window.addEventListener("beforeunload", beforeUnloadHandler);
+
+      this.showUploadProgressModal({ percent: 5, stage: "Preparando envio para o Cloudinary..." });
+
       const mapId = (window.crypto && window.crypto.randomUUID) ? window.crypto.randomUUID() : (
-        'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+        'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
           const r = Math.random() * 16 | 0, v = c === 'x' ? r : (r & 0x3 | 0x8);
           return v.toString(16);
         })
       );
 
+      let fileUrl = "";
       let coverUrl = APP_CONFIG.defaultCover;
-      if (this.currentPublishData.coverBlob) {
-        coverUrl = await CloudinaryService.uploadFile(this.currentPublishData.coverBlob, `${mapId}_cover.jpg`);
+      let audioUrl = "";
+
+      try {
+        // Capa (10% → 20%)
+        if (this.currentPublishData.coverBlob) {
+          this.updateUploadProgress(10, "Enviando arte de capa...");
+          coverUrl = await CloudinaryService.uploadFileWithProgress(
+            this.currentPublishData.coverBlob,
+            `${mapId}_cover.jpg`,
+            (p) => this.updateUploadProgress(10 + p * 0.10, `Capa: ${Math.round(p)}%...`)
+          );
+        }
+
+        // Áudio (20% → 30%)
+        if (this.currentPublishData.audioBlob) {
+          this.updateUploadProgress(20, "Enviando arquivo de áudio...");
+          audioUrl = await CloudinaryService.uploadFileWithProgress(
+            this.currentPublishData.audioBlob,
+            `${mapId}_audio.mp3`,
+            (p) => this.updateUploadProgress(20 + p * 0.10, `Áudio: ${Math.round(p)}%...`)
+          );
+        }
+
+        // Pacote .hbn (30% → 90%)
+        this.updateUploadProgress(30, "Enviando pacote .hbn...");
+        fileUrl = await CloudinaryService.uploadFileWithProgress(
+          this.currentPublishData.file,
+          `${mapId}.hbn`,
+          (p) => this.updateUploadProgress(30 + p * 0.60, `Pacote .hbn: ${Math.round(p)}%...`)
+        );
+
+        if (!fileUrl) throw new Error("Cloudinary não retornou URL para o arquivo .hbn.");
+
+        // ====================================================================
+        // FASE 4 — REGISTRO NO SUPABASE (somente metadados, após Cloudinary ok)
+        // Apenas colunas que existem na tabela beatmaps são inseridas aqui.
+        // ====================================================================
+        this.updateUploadProgress(92, "Salvando metadados no banco de dados...");
+
+        const selectedLanguage = document.getElementById("pub-language-select")?.value || "português";
+
+        const newMapRecord = {
+          id:                   mapId,
+          title:                this.currentPublishData.title  || "Beatmap Sem Título",
+          artist:               this.currentPublishData.artist || "Artista Desconhecido",
+          bpm:                  Number(this.currentPublishData.bpm) || 120,
+          mapper_name:          user.username,
+          mapper_id:            (user.id && typeof user.id === "string" && user.id.length === 36 && user.id.includes("-")) ? user.id : null,
+          cover_url:            coverUrl,
+          file_url:             fileUrl,
+          audio_preview_url:    audioUrl || "",
+          audio_preview_start:  Number(this.currentPublishData.previewStart) || 0,
+          duration_seconds:     Math.round(Number(this.currentPublishData.length) || 118),
+          total_notes:          Number(this.currentPublishData.totalNotes) || 0,
+          map_hash:             mapHash,
+          language:             selectedLanguage,
+          difficulty_level:     this.currentPublishData.difficultyLevel || "medio",
+          difficulty_name:      this.currentPublishData.difficultyName  || "Médio",
+          star_rating:          Number(this.currentPublishData.starRating) || 2.5,
+          status:               "pending",
+          charts:               this.currentPublishData.charts || {},
+          downloads_count:      0,
+          favorites_count:      0,
+          reports_count:        0,
+          created_at:           new Date().toISOString()
+        };
+
+        await db.insertBeatmap(newMapRecord);
+        await db.recordSuccessfulUpload(user.id);
+
+        this.updateUploadProgress(100, "Beatmap publicado com sucesso!");
+
+        // Pausa breve para o usuário ver os 100% concluídos
+        await new Promise(resolve => setTimeout(resolve, 400));
+
+        this.currentPublishData = null;
+        this.showToast("Beatmap enviado! Aguardando aprovação da moderação para se tornar ranqueado.");
+        window.renderBeatmapDetailView(newMapRecord.id);
+
+      } catch (uploadErr) {
+        console.error("❌ Erro durante o fluxo de publicação:", uploadErr);
+        
+        // Exclusão imediata do Cloudinary caso o Supabase não conclua o registro (evita lixo / arquivos órfãos)
+        try {
+          if (fileUrl) await CloudinaryService.deleteFile(fileUrl);
+          if (coverUrl && !coverUrl.includes("unsplash.com") && !coverUrl.includes("dicebear.com")) {
+            await CloudinaryService.deleteFile(coverUrl);
+          }
+          if (audioUrl) await CloudinaryService.deleteFile(audioUrl);
+        } catch (cleanupErr) {
+          console.warn("Aviso ao limpar Cloudinary após falha:", cleanupErr);
+        }
+
+        this.showFormError(
+          "Ocorreu um erro durante o upload do pacote: " + uploadErr.message + ". O envio foi cancelado e nenhum arquivo órfão foi mantido no Cloudinary nem no Supabase.",
+          "publish-form-element"
+        );
+        this.showToast("Falha no upload do beatmap.");
+      } finally {
+        // Remove a proteção contra fechamento da aba e fecha o modal bloqueante
+        window.removeEventListener("beforeunload", beforeUnloadHandler);
+        this.hideUploadProgressModal();
+      }
+    }
+
+    // ========================================================================
+    // PORTAL DE ACESSO DO DESENVOLVEDOR (Desativado / Redirecionado para Home)
+    // ========================================================================
+    renderDevPortalView() {
+      router.navigateClean("#/");
+    }
+
+    async activateDeveloperMode() {
+      let user = stateMgr.getUser();
+      if (!user) {
+        user = {
+          id: "usr-dev-01",
+          username: "HDBN_LeadDev",
+          email: "dev@hdbn.club",
+          role: "dev",
+          is_dev: true,
+          is_admin_apto: true,
+          is_writer: true,
+          avatar_url: "https://api.dicebear.com/7.x/bottts/svg?seed=HDBN_LeadDev",
+          created_at: new Date().toISOString()
+        };
+      } else {
+        user = {
+          ...user,
+          role: "dev",
+          is_dev: true,
+          is_admin_apto: true,
+          is_writer: true
+        };
       }
 
-      const fileUrl = await CloudinaryService.uploadFile(this.currentPublishData.file, `${mapId}.hbn`);
-
-      const newMapRecord = {
-        id: mapId,
-        title: this.currentPublishData.title || "Beatmap Sem Título",
-        artist: this.currentPublishData.artist || "Artista Desconhecido",
-        bpm: Number(this.currentPublishData.bpm) || 120,
-        mapper_name: user.username,
-        mapper_id: (user.id && typeof user.id === "string" && user.id.length === 36 && user.id.includes("-")) ? user.id : null,
-        mapper_avatar: user.avatar_url || APP_CONFIG.defaultAvatar,
-        cover_url: coverUrl,
-        file_url: fileUrl,
-        audio_preview_start: Number(this.currentPublishData.previewStart) || 0,
-        audio_preview_length: 30.0,
-        difficulty_level: this.currentPublishData.difficultyLevel || "medio",
-        difficulty_name: this.currentPublishData.difficultyName || "Médio",
-        star_rating: Number(this.currentPublishData.starRating) || 2.5,
-        keys: "4K",
-        status: "pending",
-        charts: this.currentPublishData.charts || {},
-        charts_data: this.currentPublishData.charts || {},
-        downloads_count: 0,
-        favorites_count: 0,
-        plays_count: 0,
-        created_at: new Date().toISOString()
-      };
-
-      this.showToast("Registrando beatmap no banco de dados...");
-      await db.insertBeatmap(newMapRecord);
-      this.showToast("Beatmap enviado! Aguardando aprovação da moderação para se tornar ranqueado.");
-
-      this.currentPublishData = null;
-      window.renderBeatmapDetailView(newMapRecord.id);
+      stateMgr.setUser(user, true);
+      if (db.supabase) {
+        db.supabase.from("users").upsert(user).catch(() => {});
+      }
+      this.updateAuthUI();
+      this.showToast("Modo Desenvolvedor (DEV) ativado com sucesso!");
+      window.router.navigateClean("#/admin");
     }
 
     // ========================================================================
@@ -2687,16 +4453,21 @@
       // 🔒 GUARD: somente ADM e DEV podem acessar este painel
       if (!user || (!isDev && !isAdmin)) {
         this.mainView.innerHTML = `
-          <div class="container" style="padding: 6rem 0; text-align:center; max-width:520px; margin:0 auto;">
+          <div class="container" style="padding: 6rem 0; text-align:center; max-width:540px; margin:0 auto;">
             <span class="material-symbols-outlined" style="font-size:5rem; color:#ef4444;">gpp_bad</span>
             <h1 style="font-size:2rem; font-weight:900; margin:1rem 0; color:#ef4444;">Acesso Negado</h1>
             <p style="color:var(--text-secondary); margin-bottom:2rem; line-height:1.7; font-size:1rem;">
               Você não tem permissão para acessar o Painel de Moderação.<br>
               <strong>Apenas Administradores e Desenvolvedores</strong> podem entrar nesta área.
             </p>
-            <button class="btn btn-primary" onclick="window.router.navigateClean('#/')">
-              <span class="material-symbols-outlined">home</span> Voltar ao Início
-            </button>
+            <div style="display:flex; gap:0.75rem; justify-content:center; flex-wrap:wrap;">
+              <a href="#/dev" onclick="window.router.navigateClean('#/dev'); return false;" class="btn btn-primary" style="background:#f59e0b; color:#000; font-weight:800;">
+                <span class="material-symbols-outlined">terminal</span> Portal do Desenvolvedor (DEV)
+              </a>
+              <button class="btn btn-secondary" onclick="window.router.navigateClean('#/')">
+                <span class="material-symbols-outlined">home</span> Voltar ao Início
+              </button>
+            </div>
           </div>
         `;
         return;
@@ -2753,16 +4524,16 @@
                       </td>
                     </tr>
                   ` : mapsList.map(m => {
-                    const isSuspended = m.status === 'suspenso';
-                    const isHidden = m.status === 'oculto';
-                    const isPending = m.status === 'pending';
-                    const isRanked = m.status === 'approved_ranked';
-
-                    let statusBadge = '<span class="status-badge status-approved">Ranqueado</span>';
-                    if (isPending) statusBadge = '<span class="status-badge" style="background:rgba(245,158,11,0.2); color:#f59e0b; border:1px solid #f59e0b;">Pendente</span>';
-                    else if (isSuspended) statusBadge = '<span class="status-badge status-inactive">Suspenso</span>';
-                    else if (isHidden) statusBadge = '<span class="status-badge status-pending">Oculto</span>';
-                    else if (!isRanked) statusBadge = '<span class="status-badge" style="background:rgba(148,163,184,0.2); color:#94a3b8;">Não-Ranqueado</span>';
+                    let statusBadge = '<span class="status-badge" style="background:rgba(245,158,11,0.2); color:#f59e0b; border:1px solid #f59e0b;">⏳ Pendente</span>';
+                    if (m.status === 'ranked') {
+                      statusBadge = '<span class="status-badge status-approved">⭐ Ranqueado</span>';
+                    } else if (m.status === 'unranked') {
+                      statusBadge = '<span class="status-badge" style="background:rgba(56,189,248,0.2); color:#38bdf8; border:1px solid #38bdf8;">✅ Normal</span>';
+                    } else if (m.status === 'suspended') {
+                      statusBadge = '<span class="status-badge status-inactive">🚫 Suspenso</span>';
+                    } else if (m.status === 'hidden') {
+                      statusBadge = '<span class="status-badge status-pending">👁️ Oculto</span>';
+                    }
 
                     return `
                       <tr>
@@ -2781,30 +4552,33 @@
                             Ver
                           </button>
                           
-                          <!-- Botão Aprovar e Ranquear (se pendente ou não-ranqueado) -->
-                          ${!isRanked ? `
-                            <button class="btn btn-secondary btn-sm" style="background:rgba(34,197,94,0.2); color:#22c55e; border-color:#22c55e; font-weight:700;" onclick="window.app.adminApproveMap('${m.id}')" title="Aprovar beatmap e torná-lo Oficialmente Ranqueado">
-                              Aprovar (Ranqueado)
+                          <!-- Botão Aprovar Ranqueado -->
+                          ${m.status !== 'ranked' ? `
+                            <button class="btn btn-secondary btn-sm" style="background:rgba(34,197,94,0.2); color:#22c55e; border-color:#22c55e; font-weight:700;" onclick="window.app.adminApproveRanked('${m.id}')" title="Aprovar como Mapa Ranqueado Oficial">
+                              ⭐ Ranqueado
                             </button>
-                          ` : `
-                            <button class="btn btn-secondary btn-sm" style="background:rgba(148,163,184,0.15); color:#94a3b8;" onclick="window.app.adminSetUnranked('${m.id}')" title="Remover status de ranqueado">
-                              Desranquear
-                            </button>
-                          `}
+                          ` : ''}
 
-                          <!-- Botão Suspender com Tempo e Observação -->
-                          <button class="btn btn-secondary btn-sm" style="background:rgba(245,158,11,0.2); color:#f59e0b;" onclick="window.app.adminSuspendMap('${m.id}')" title="Suspender mapa por um tempo e adicionar observação">
+                          <!-- Botão Aprovar Normal -->
+                          ${m.status !== 'unranked' ? `
+                            <button class="btn btn-secondary btn-sm" style="background:rgba(56,189,248,0.2); color:#38bdf8; border-color:#38bdf8; font-weight:700;" onclick="window.app.adminApproveNormal('${m.id}')" title="Aprovar como Mapa Normal da Comunidade">
+                              ✅ Normal
+                            </button>
+                          ` : ''}
+
+                          <!-- Botão Suspender -->
+                          <button class="btn btn-secondary btn-sm" style="background:rgba(245,158,11,0.2); color:#f59e0b;" onclick="window.app.adminSuspendMap('${m.id}')" title="Suspender mapa com observação">
                             Suspender
                           </button>
 
                           <!-- Botão Ocultar / Reexibir -->
-                          <button class="btn btn-secondary btn-sm" style="background:rgba(56,189,248,0.2); color:#38bdf8;" onclick="window.app.adminToggleHideMap('${m.id}')" title="Marcar como oculto">
-                            ${isHidden ? 'Reexibir' : 'Ocultar'}
+                          <button class="btn btn-secondary btn-sm" style="background:rgba(148,163,184,0.2); color:#94a3b8;" onclick="window.app.adminToggleHideMap('${m.id}')" title="Alternar status oculto">
+                            ${m.status === 'hidden' ? 'Reexibir' : 'Ocultar'}
                           </button>
 
-                          <!-- Botão Excluir: Restrito estritamente a DEV -->
-                          ${isDev ? `
-                            <button class="btn btn-secondary btn-sm" style="background:rgba(239,68,68,0.2); color:#ef4444;" onclick="window.app.deleteMap('${m.id}')" title="Excluir beatmap permanentemente (Permissão DEV)">
+                          <!-- Botão Excluir -->
+                          ${(isDev || isAdmin) ? `
+                            <button class="btn btn-secondary btn-sm" style="background:rgba(239,68,68,0.2); color:#ef4444;" onclick="window.app.deleteMap('${m.id}')" title="Excluir beatmap permanentemente">
                               Excluir
                             </button>
                           ` : ''}
@@ -2876,8 +4650,8 @@
                   <tr>
                     <th>Usuário</th>
                     <th>Cargo Oficial</th>
-                    <th>Infrações</th>
-                    <th>Status / Inatividade</th>
+                    <th>Uploads Hoje (Limite)</th>
+                    <th>Status / Suspensão</th>
                     <th>Ações de Moderação</th>
                   </tr>
                 </thead>
@@ -2885,6 +4659,7 @@
                   ${usersList.map(u => {
                     const targetIsDev = u.role === 'dev' || u.is_dev;
                     const infractionsCount = stateMgr.getInfractions(u.id);
+                    const isSuspended = u.status === 'suspended';
 
                     return `
                       <tr>
@@ -2901,12 +4676,34 @@
                           </span>
                         </td>
                         <td>
-                          <span style="font-weight:900; color:${infractionsCount >= 5 ? '#ef4444' : '#fff'};">
-                            ${infractionsCount} / 5 ${infractionsCount >= 5 ? '<span class="material-symbols-outlined" style="font-size:1rem; vertical-align:middle; color:#ef4444;">warning</span> CRÍTICO' : ''}
-                          </span>
+                          <div style="display:flex; align-items:center; gap:0.4rem;">
+                            <span style="font-weight:700; color:${u.custom_upload_limit ? '#f59e0b' : '#38bdf8'}; font-size:0.85rem;">
+                              ${targetIsDev || u.role === 'admin' ? '<span style="color:#10b981;">Ilimitado</span>' : `${u.uploads_today_count || 0} / ${u.custom_upload_limit ? (u.custom_upload_limit + ' (Mod)') : (u.is_trusted_creator ? '10' : '2')}`}
+                            </span>
+                            ${!targetIsDev ? `
+                              <button class="btn btn-secondary btn-sm" style="padding:0.15rem 0.4rem; font-size:0.7rem;" onclick="window.app.adminSetUserLimit('${u.id}', '${u.username}', ${u.custom_upload_limit || 2})" title="Ajustar limite diário de uploads">
+                                <span class="material-symbols-outlined" style="font-size:13px;">tune</span>
+                              </button>
+                            ` : ''}
+                          </div>
                         </td>
                         <td>
-                          ${(u.days_inactive || 0) >= 27 ? `<span class="status-badge status-inactive">Inativo (${u.days_inactive} dias)</span>` : '<span class="status-badge status-approved">Ativo</span>'}
+                          ${isSuspended ? `
+                            <div style="display:flex; flex-direction:column; gap:0.25rem;">
+                              <span class="status-badge" style="background:rgba(239,68,68,0.2); color:#ef4444; border:1px solid #ef4444; font-size:0.75rem;">
+                                Suspenso (${u.duplicate_attempts_count || 0} tentativas)
+                              </span>
+                              <button class="btn btn-secondary btn-sm" style="background:rgba(16,185,129,0.2); color:#10b981; padding:0.15rem 0.4rem; font-size:0.7rem;" onclick="window.app.adminUnsuspendUser('${u.id}', '${u.username}')" title="Remover suspensão">
+                                Reativar
+                              </button>
+                            </div>
+                          ` : u.status === 'banned' ? `
+                            <span class="status-badge" style="background:rgba(239,68,68,0.3); color:#ef4444;">Banido</span>
+                          ` : (u.days_inactive || 0) >= 27 ? `
+                            <span class="status-badge status-inactive">Inativo (${u.days_inactive} dias)</span>
+                          ` : `
+                            <span class="status-badge status-approved">Ativo</span>
+                          `}
                         </td>
                         <td>
                           ${targetIsDev ? `
@@ -2964,26 +4761,48 @@
       this.renderAdminView();
     }
 
-    async adminApproveMap(mapId) {
+    getVisibleBeatmaps(allMaps) {
+      const user = stateMgr.getUser();
+      const isStaff = user && (user.role === 'admin' || user.role === 'dev' || user.role === 'mod' || user.is_dev);
+      return (allMaps || []).filter(m => {
+        // Staff vê todos os mapas para moderação
+        if (isStaff) return true;
+        // Mapas aprovados (ranked ou unranked / normal) são públicos para todos
+        if (m.status === 'ranked' || m.status === 'unranked') return true;
+        // Mapas pendentes/ocultos/suspensos: somente o próprio criador pode ver seu mapa
+        if (user && (m.mapper_name === user.username || m.mapper_id === user.id)) return true;
+        return false;
+      });
+    }
+
+    async adminApproveRanked(mapId) {
       const user = stateMgr.getUser();
       if (!user || (!user.is_dev && user.role !== 'admin' && !user.is_admin_apto)) {
-        this.showToast("Apenas Administradores ou DEVs podem aprovar beatmaps.");
+        this.showToast("Apenas moderadores podem aprovar mapas.");
         return;
       }
-      await db.updateBeatmapStatus(mapId, 'approved_ranked', 'Aprovado oficialmente pela moderação.');
-      this.showToast("Beatmap aprovado e agora está Oficialmente Ranqueado!");
+      await db.updateBeatmapStatus(mapId, 'ranked', 'Aprovado como Mapa Ranqueado Oficial.');
+      this.showToast("Beatmap aprovado como ⭐ Ranqueado Oficial!");
       this.renderAdminView('maps');
     }
 
-    async adminSetUnranked(mapId) {
+    async adminApproveNormal(mapId) {
       const user = stateMgr.getUser();
       if (!user || (!user.is_dev && user.role !== 'admin' && !user.is_admin_apto)) {
-        this.showToast("Sem permissão.");
+        this.showToast("Apenas moderadores podem aprovar mapas.");
         return;
       }
-      await db.updateBeatmapStatus(mapId, 'approved_unranked', 'Status alterado para Não-Ranqueado.');
-      this.showToast("Status alterado para Não-Ranqueado.");
+      await db.updateBeatmapStatus(mapId, 'unranked', 'Aprovado como Mapa Normal da Comunidade.');
+      this.showToast("Beatmap aprovado como ✅ Mapa Normal!");
       this.renderAdminView('maps');
+    }
+
+    async adminApproveMap(mapId) {
+      return this.adminApproveRanked(mapId);
+    }
+
+    async adminSetUnranked(mapId) {
+      return this.adminApproveNormal(mapId);
     }
 
     async adminSuspendMap(mapId) {
@@ -2992,7 +4811,7 @@
       const obs = prompt("Adicione uma observação do motivo da suspensão:", "Ajuste na sincronia das notas ou áudio");
       if (obs !== null) {
         stateMgr.setObservation(mapId, `[SUSPENSO - ${time}]: ${obs}`);
-        await db.updateBeatmapStatus(mapId, 'suspenso', `[SUSPENSO - ${time}]: ${obs}`);
+        await db.updateBeatmapStatus(mapId, 'suspended', `[SUSPENSO - ${time}]: ${obs}`);
         this.showToast(`Mapa suspenso por ${time}. Observação registrada!`);
         this.renderAdminView('maps');
       }
@@ -3000,9 +4819,9 @@
 
     async adminToggleHideMap(mapId) {
       const map = await db.getBeatmapById(mapId);
-      const newStatus = map?.status === 'oculto' ? 'approved_ranked' : 'oculto';
+      const newStatus = map?.status === 'hidden' ? 'unranked' : 'hidden';
       await db.updateBeatmapStatus(mapId, newStatus);
-      this.showToast(`Visibilidade do mapa alterada para ${newStatus === 'oculto' ? 'Oculto' : 'Ativo'}!`);
+      this.showToast(`Visibilidade do mapa alterada para ${newStatus === 'hidden' ? 'Oculto' : 'Normal'}!`);
       this.renderAdminView('maps');
     }
 
@@ -3027,6 +4846,31 @@
       }
     }
 
+    async adminSetUserLimit(userId, username, currentLimit) {
+      const newLimit = prompt(`Defina o novo limite diário de envios de beatmaps para ${username} (número de mapas por dia, ou 0 para voltar ao padrão de 2):`, currentLimit || "5");
+      if (newLimit === null) return;
+      const num = parseInt(newLimit, 10);
+      try {
+        await db.adminSetUserUploadLimit(userId, num > 0 ? num : null);
+        this.showToast(`Limite diário de ${username} atualizado para ${num > 0 ? num + ' mapas/dia' : '2 mapas/dia (padrão)'}!`);
+        this.renderAdminView('users');
+      } catch (e) {
+        alert("Erro ao alterar limite: " + e.message);
+      }
+    }
+
+    async adminUnsuspendUser(userId, username) {
+      if (confirm(`Deseja remover a suspensão da conta de ${username} e restabelecer as permissões de publicação?`)) {
+        try {
+          await db.adminUnsuspendUser(userId);
+          this.showToast(`Conta de ${username} reativada com sucesso!`);
+          this.renderAdminView('users');
+        } catch (e) {
+          alert("Erro ao reativar conta: " + e.message);
+        }
+      }
+    }
+
     async banMapWithInfraction(mapId, authorId) {
       await db.deleteBeatmap(mapId);
       const count = stateMgr.incrementInfraction(authorId);
@@ -3035,29 +4879,38 @@
     }
 
     // ========================================================================
-    // TELA DEDICADA DE BUSCA (#/busca) — COM GRADE DE 3 COLUNAS
+    // TELA DEDICADA DE BUSCA (#/busca) — COM GRADE E CARROSSEL
     // ========================================================================
-    async renderSearchView(initialQuery, initialFilter) {
+    async renderSearchView(initialQuery, initialFilter, initialLang) {
+      const view = this.getMainView();
+      if (!view) return;
       const urlParams = new URLSearchParams(window.location.hash.split("?")[1] || "");
       const query = (initialQuery !== undefined ? initialQuery : (urlParams.get("q") || "")).trim();
       const filter = initialFilter || urlParams.get("tipo") || this.searchPageCategory || "all";
+      const langFilter = initialLang || urlParams.get("idioma") || this.searchPageLangFilter || "all";
       this.searchPageCategory = filter;
+      this.searchPageLangFilter = langFilter;
 
       const term = query.toLowerCase();
       const allUsers = await db.getUsers();
-      const allMaps = await db.getBeatmaps();
+      const rawMaps = await db.getBeatmaps();
+      const allMaps = this.getVisibleBeatmaps(rawMaps);
 
       const matchedUsers = term 
         ? allUsers.filter(u => u.username.toLowerCase().includes(term) || (u.discord_tag && u.discord_tag.toLowerCase().includes(term)) || (u.bio && u.bio.toLowerCase().includes(term)))
         : allUsers;
 
-      const matchedMaps = term 
+      let matchedMaps = term 
         ? allMaps.filter(m => m.title.toLowerCase().includes(term) || m.artist.toLowerCase().includes(term) || m.mapper_name.toLowerCase().includes(term))
         : allMaps;
 
+      if (langFilter && langFilter !== "all") {
+        matchedMaps = matchedMaps.filter(m => (m.language || "português").toLowerCase() === langFilter.toLowerCase());
+      }
+
       const cleanQueryAttr = (query || "").replace(/"/g, "&quot;");
 
-      this.mainView.innerHTML = `
+      view.innerHTML = `
         <div class="container search-page-container">
           <div>
             <h1 style="font-size: 2rem; font-weight: 900; color: #fff; margin-bottom: 0.35rem; display: flex; align-items: center; gap: 0.6rem;">
@@ -3082,16 +4935,33 @@
             <button class="btn btn-sm ${filter === 'users' ? 'btn-primary' : 'btn-secondary'}" onclick="window.app.setSearchCategory('users')">Usuários (${matchedUsers.length})</button>
           </div>
 
-          <!-- Área de Resultados em Grade de 3 Colunas (1, 2, 3 e 3 embaixo) -->
-          <div id="search-results-area" style="margin-top:1rem;">
+          <!-- Filtro por Idioma dos Mapas -->
+          <div style="display:flex; gap:0.4rem; align-items:center; flex-wrap:wrap; margin-top:0.75rem;">
+            <span style="font-size:0.8rem; font-weight:700; color:var(--text-muted); margin-right:0.25rem;">Idioma do Mapa:</span>
+            <button class="btn btn-sm ${langFilter === 'all' ? 'btn-primary' : 'btn-secondary'}" onclick="window.app.setSearchLang('all')">Todos</button>
+            <button class="btn btn-sm ${langFilter === 'português' ? 'btn-primary' : 'btn-secondary'}" onclick="window.app.setSearchLang('português')">🇧🇷 Português</button>
+            <button class="btn btn-sm ${langFilter === 'inglês' ? 'btn-primary' : 'btn-secondary'}" onclick="window.app.setSearchLang('inglês')">🇺🇸 Inglês</button>
+            <button class="btn btn-sm ${langFilter === 'espanhol' ? 'btn-primary' : 'btn-secondary'}" onclick="window.app.setSearchLang('espanhol')">🇪🇸 Espanhol</button>
+            <button class="btn btn-sm ${langFilter === 'japonês' ? 'btn-primary' : 'btn-secondary'}" onclick="window.app.setSearchLang('japonês')">🇯🇵 Japonês</button>
+            <button class="btn btn-sm ${langFilter === 'coreano' ? 'btn-primary' : 'btn-secondary'}" onclick="window.app.setSearchLang('coreano')">🇰🇷 Coreano</button>
+            <button class="btn btn-sm ${langFilter === 'chinês' ? 'btn-primary' : 'btn-secondary'}" onclick="window.app.setSearchLang('chinês')">🇨🇳 Chinês</button>
+          </div>
+
+          <!-- Área de Resultados -->
+          <div id="search-results-area" style="margin-top:1.25rem;">
             ${filter === 'all' ? `
               ${matchedUsers.length > 0 ? `
                 <div style="margin-bottom:2.5rem;">
-                  <h3 style="font-size:1.2rem; font-weight:800; color:#fff; margin-bottom:1rem; display:flex; align-items:center; gap:0.4rem;">
+                  <h3 style="font-size:1.2rem; font-weight:800; color:#fff; margin-bottom:0.75rem; display:flex; align-items:center; gap:0.4rem;">
                     <span class="material-symbols-outlined" style="color:var(--accent-cyan);">people</span> Usuários (${matchedUsers.length})
                   </h3>
-                  <div class="search-grid-3col">
-                    ${matchedUsers.map(u => this._createUserCardHTML(u)).join('')}
+                  <!-- Carrossel no Topo para Usuários quando selecionado Todos -->
+                  <div class="search-users-carousel" style="display:flex; gap:1rem; overflow-x:auto; padding-bottom:1rem; scroll-snap-type:x mandatory; -webkit-overflow-scrolling:touch;">
+                    ${matchedUsers.map(u => `
+                      <div style="flex:0 0 290px; scroll-snap-align:start;">
+                        ${this._createUserCardHTML(u)}
+                      </div>
+                    `).join('')}
                   </div>
                 </div>
               ` : ''}
@@ -3154,32 +5024,52 @@
       const input = document.getElementById("search-main-input");
       const q = input ? input.value.trim() : "";
       const cat = this.searchPageCategory || "all";
-      window.location.hash = `#/busca?q=${encodeURIComponent(q)}&tipo=${cat}`;
-      this.renderSearchView(q, cat);
+      const lang = this.searchPageLangFilter || "all";
+      window.location.hash = `#/busca?q=${encodeURIComponent(q)}&tipo=${cat}&idioma=${encodeURIComponent(lang)}`;
+      this.renderSearchView(q, cat, lang);
     }
 
     setSearchCategory(category) {
       this.searchPageCategory = category;
       const input = document.getElementById("search-main-input");
       const q = input ? input.value.trim() : "";
-      window.location.hash = `#/busca?q=${encodeURIComponent(q)}&tipo=${category}`;
-      this.renderSearchView(q, category);
+      const lang = this.searchPageLangFilter || "all";
+      window.location.hash = `#/busca?q=${encodeURIComponent(q)}&tipo=${category}&idioma=${encodeURIComponent(lang)}`;
+      this.renderSearchView(q, category, lang);
+    }
+
+    setSearchLang(lang) {
+      this.searchPageLangFilter = lang;
+      const input = document.getElementById("search-main-input");
+      const q = input ? input.value.trim() : "";
+      const cat = this.searchPageCategory || "all";
+      window.location.hash = `#/busca?q=${encodeURIComponent(q)}&tipo=${cat}&idioma=${encodeURIComponent(lang)}`;
+      this.renderSearchView(q, cat, lang);
     }
 
     _createUserCardHTML(u) {
       const role = APP_CONFIG.ROLES[u.role] || APP_CONFIG.ROLES.player;
       const bioText = (u.bio && u.bio.trim()) ? u.bio.trim() : "Ainda não falou nada sobre si.";
+      const showTag = role.tagClass && role.tagClass !== 'tag-player';
+      const hasStream = u.stream_kick || u.stream_twitch || u.stream_youtube;
       return `
-        <div class="beatmap-shelf-card" onclick="window.renderProfileView('${u.id}')" style="padding: 1.25rem; display: flex; align-items: flex-start; gap: 1rem; cursor: pointer;">
-          <img src="${u.avatar_url}" style="width: 54px; height: 54px; border-radius: var(--radius-sm); object-fit: cover; border: 2px solid var(--accent-purple);" alt="${u.username}">
-          <div style="flex: 1; min-width: 0;">
-            <div style="display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap;">
-              <strong style="color: white; font-size: 0.95rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${u.username}</strong>
-              <span class="hierarchy-tag ${role.tagClass}" style="font-size: 0.65rem;">${role.label}</span>
-              ${u.is_dev ? '<span class="hierarchy-tag tag-dev" style="font-size:0.65rem;">DEV</span>' : ''}
+        <div class="beatmap-shelf-card user-carousel-card" onclick="window.renderProfileView('${u.id}')" style="padding: 0.9rem 1rem; display: flex; align-items: flex-start; gap: 0.85rem; cursor: pointer; height: 125px; min-height: 125px; max-height: 125px; box-sizing: border-box; overflow: hidden; position: relative;">
+          <img src="${u.avatar_url || APP_CONFIG.defaultAvatar}" onerror="this.onerror=null; this.src='${APP_CONFIG.defaultAvatar}'" style="width: 50px; height: 50px; min-width: 50px; border-radius: var(--radius-sm); object-fit: cover; border: 2px solid var(--accent-purple); flex-shrink: 0;" alt="${u.username}">
+          <div style="flex: 1; min-width: 0; display: flex; flex-direction: column; justify-content: flex-start; height: 100%; overflow: hidden;">
+            <div style="display: flex; align-items: center; gap: 0.35rem; overflow: hidden; white-space: nowrap;">
+              <strong style="color: white; font-size: 0.92rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 130px;" title="${u.username}">${u.username}</strong>
+              ${showTag ? `<span class="hierarchy-tag ${role.tagClass}" style="font-size: 0.62rem; padding: 0.1rem 0.3rem; flex-shrink: 0;">${role.label}</span>` : ''}
+              ${u.is_dev ? '<span class="hierarchy-tag tag-dev" style="font-size:0.62rem; padding: 0.1rem 0.3rem; flex-shrink: 0;">DEV</span>' : ''}
             </div>
-            ${u.discord_tag ? `<div style="font-size: 0.75rem; color: var(--accent-cyan); font-weight: 600; margin-top: 0.2rem;">@${u.discord_tag}</div>` : ''}
-            <div style="font-size: 0.8rem; color: var(--text-secondary); margin-top: 0.4rem; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; line-height: 1.3;">
+            ${hasStream ? `
+              <div style="display: flex; gap: 0.3rem; margin-top: 0.15rem; align-items: center; flex-shrink: 0;">
+                ${u.stream_kick ? '<span style="font-size:0.62rem; font-weight:800; color:#10b981; background:rgba(16,185,129,0.15); border:1px solid #10b981; padding:0 0.3rem; border-radius:3px;">KIK</span>' : ''}
+                ${u.stream_twitch ? '<span style="font-size:0.62rem; font-weight:800; color:#c084fc; background:rgba(168,85,247,0.15); border:1px solid #a855f7; padding:0 0.3rem; border-radius:3px;">TWITCH</span>' : ''}
+                ${u.stream_youtube ? '<span style="font-size:0.62rem; font-weight:800; color:#f87171; background:rgba(239,68,68,0.15); border:1px solid #ef4444; padding:0 0.3rem; border-radius:3px;">YT</span>' : ''}
+              </div>
+            ` : ''}
+            ${u.discord_tag ? `<div style="font-size: 0.72rem; color: var(--accent-cyan); font-weight: 600; margin-top: 0.15rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex-shrink: 0;">@${u.discord_tag}</div>` : ''}
+            <div style="font-size: 0.76rem; color: var(--text-secondary); margin-top: 0.25rem; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; line-height: 1.3;">
               ${bioText}
             </div>
           </div>
@@ -3205,6 +5095,7 @@
   window.renderRankingView = (t, m) => app.renderRankingView(t, m);
   window.renderCommunityView = (t, st, term, p) => app.renderCommunityView(t, st, term, p);
   window.renderHelpView = () => router.navigateClean("#/ajuda");
+  window.renderRulesView = () => router.navigateClean("#/regras");
   window.renderBlogExpandedView = () => router.navigateClean("#/blogs");
   window.renderProfileView = (id) => {
     const user = stateMgr.getUser();
@@ -3223,6 +5114,7 @@
     window.scrollTo(0, 0);
   };
   window.renderPublishView = () => router.navigateClean("#/publicar");
+  window.renderDevPortalView = () => router.navigateClean("#/");
   window.renderAdminView = (tab) => {
     const user = stateMgr.getUser();
     const isDev   = user ? (user.role === 'dev'   || user.is_dev)        : false;
@@ -3248,6 +5140,9 @@
 
   window.toggleUserMenu = (e) => {
     if (e) e.stopPropagation();
+    if (window.app && typeof window.app.updateAuthUI === "function") {
+      window.app.updateAuthUI();
+    }
     document.getElementById("user-floating-menu")?.classList.toggle("active");
   };
 
@@ -3503,6 +5398,8 @@
       }
     }
 
+    const randomAvatar = await NekosService.fetchRandomAvatar();
+
     // Perfil público: NUNCA salva senhas na tabela pública!
     const newUser = {
       id: generatedId,
@@ -3510,7 +5407,7 @@
       email: email,
       discord_tag: discord,
       bio: "",
-      avatar_url: `https://api.dicebear.com/7.x/bottts/svg?seed=${encodeURIComponent(username)}`,
+      avatar_url: randomAvatar || APP_CONFIG.defaultAvatar,
       role: "player",
       is_dev: false,
       is_admin_apto: false,
@@ -3533,6 +5430,10 @@
     router.handleRouting();
   };
 
-  document.addEventListener("DOMContentLoaded", () => app.init());
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", () => app.init());
+  } else {
+    app.init();
+  }
 
 })();

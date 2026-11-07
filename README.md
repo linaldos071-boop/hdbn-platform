@@ -1,7 +1,10 @@
-# 🎵 HDBN — Plataforma Comunitária & Painel Web
-
-O **HDBN** é a plataforma web comunitária e ecossistema integrado para um jogo de ritmo 2D desenvolvido com a Godot Engine[cite: 1]. Inspirado fortemente na experiência e no modelo do *osu!mania*, o projeto funciona como um hub central onde os jogadores podem gerenciar contas, interagir com publicações, disputar rankings e realizar o upload e download de mapas criptografados (`.hbn`)[cite: 1].
-
+📝 Notas de Atualização Recentes (Changelog)
+🚀 Ontem & Hoje no HDBN:
+Perfil de Usuário Renovado: Novo Hero Banner com degradê escuro, avatar ampliado e centralizado com iluminação neon, data oficial de criação da conta e links diretos para YouTube, Twitch e Kick (sem poluição visual quando não preenchidos). Remoção definitiva de tags genéricas de jogador.
+Diretrizes & Regras da Comunidade: Nova seção e página dedicada (#/regras) acessível pela Comunidade e Central de Ajuda, com critérios claros de estabilidade contra crashes na Godot Engine, sincronia de áudio/BPM, diretrizes para artes de capa e políticas anti-spam.
+Estabilidade & Navegação: Correção total do travamento de carregamento infinito ao recarregar a página (F5) e rota blindada com página 404 exibindo os mapas mais baixados e favoritos.
+Métricas em Tempo Real: Atualização instantânea dos contadores de downloads e fãs/favoritos diretamente na interface e no banco de dados.
+Banco de Dados Otimizado (Supabase): Limpeza de colunas redundantes, suporte direto a streams e índices acelerados para consultas mais rápidas.
 ---
 
 ## 🚀 Visão Geral da Arquitetura & Stack Tecnológica
